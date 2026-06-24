@@ -1,0 +1,74 @@
+{
+  "client_token": "workflow_notify_001",
+  "title": "新活动通知",
+  "description": "当有新的校园活动入库时，发送飞书通知",
+  "steps": [
+    {
+      "id": "step_trigger",
+      "type": "AddRecordTrigger",
+      "title": "新记录创建触发",
+      "data": {
+        "table_name": "活动库",
+        "watched_field_name": "标题"
+      },
+      "next": "step_action"
+    },
+    {
+      "id": "step_action",
+      "type": "LarkMessageAction",
+      "title": "发送飞书通知",
+      "data": {
+        "receiver": [
+          {
+            "value_type": "user",
+            "value": {
+              "id": "ou_1d65afeae7a0813c8755ef5a631a4e35"
+            }
+          }
+        ],
+        "send_to_everyone": false,
+        "title": [
+          {
+            "value_type": "text",
+            "value": "🎉 新活动入库！"
+          }
+        ],
+        "content": [
+          {
+            "value_type": "text",
+            "value": "📚 标题："
+          },
+          {
+            "value_type": "ref",
+            "value": "$.step_trigger.fldUPycAtr"
+          },
+          {
+            "value_type": "text",
+            "value": "\n🏷️ 分类："
+          },
+          {
+            "value_type": "ref",
+            "value": "$.step_trigger.fldC1QGp6c"
+          },
+          {
+            "value_type": "text",
+            "value": "\n⏰ 时间："
+          },
+          {
+            "value_type": "ref",
+            "value": "$.step_trigger.fldKSCS1mn"
+          },
+          {
+            "value_type": "text",
+            "value": "\n📍 地点："
+          },
+          {
+            "value_type": "ref",
+            "value": "$.step_trigger.fldyYjUtN1"
+          }
+        ],
+        "btn_list": []
+      }
+    }
+  ]
+}

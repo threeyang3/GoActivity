@@ -367,7 +367,7 @@ def test_lark_cli_client_uploads_poster_attachments(monkeypatch) -> None:
         settings.feishu_dry_run = False
         result = client.upsert_event(event)
         assert result["record_id"] == "rec-lark-attach"
-        assert any("+record-upload-attachment" in command for command in calls)
+        assert any("+record-upsert" in command for command in calls)
     finally:
         (
             settings.feishu_provider,

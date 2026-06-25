@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -33,15 +34,32 @@ class ImageService:
         urls = extract_images(article.raw_markdown)
         image_map: dict[str, str] = {}
         images: list[Image] = []
+
+        # 先确保所有 image 记录存在
         for url in urls:
-            image = self._ensure_image(article.article_id, url)
-            if image.download_status != "downloaded":
-                self._download_image(article.article_id, image)
-            # 只把非装饰性图片加入 map（用于改写 markdown）
-            if image.local_path and image.download_status == "downloaded":
-                if not _is_decorative(image):
-                    image_map[url] = image.local_path
-            images.append(image)
+            images.append(self._ensure_image(article.article_id, url))
+
+        # 并行下载未下载的图片
+        to_download = [img for img in images if img.download_status != "downloaded"]
+        if to_download:
+            max_workers = min(5, len(to_download))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(self._download_image, article.article_id, img)
+                    for img in to_download
+                ]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.warning("Image download failed: %s", e)
+
+        # 构建 image map
+        for img in images:
+            if img.local_path and img.download_status == "downloaded":
+                if not _is_decorative(img):
+                    image_map[img.original_url] = img.local_path
+
         return rewrite_markdown(article.raw_markdown, image_map), images
 
     def _ensure_image(self, article_id: str, url: str) -> Image:

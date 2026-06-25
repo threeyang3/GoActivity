@@ -46,11 +46,11 @@ build.bat
 - **GoActivity 管理器** - 双击启动系统托盘应用
 
 功能特性：
-- ✅ 系统托盘显示绿色/红色图标（运行中/已停止）
-- ✅ 右键菜单管理服务（启动/停止/重启）
-- ✅ 双击查看服务状态
-- ✅ 打开管理页面和日志
-- ✅ 任务栏显示应用图标
+- ✅ 同时管理 GoActivity（端口 8000）和 WeRSS（端口 8001）
+- ✅ 双状态指示灯托盘图标
+- ✅ 右键菜单独立启停/重启两个服务
+- ✅ 统一状态窗口 + 同步进度弹窗
+- ✅ 独立开机自启（可分别控制）
 
 ### 命令行启动
 
@@ -70,22 +70,12 @@ python start_service.py --start --host 0.0.0.0 --port 8000
 
 ### 设置开机自启（推荐）
 
-```bash
-# 启用开机自启
-enable_autostart.bat
+通过托盘程序右键菜单设置（推荐）：
 
-# 禁用开机自启
-disable_autostart.bat
+- **开机自启 (GoActivity)** — 注册表写入，登录时自动启动
+- **开机自启 (WeRSS)** — 独立注册表键，登录时自动启动
 
-# 检查自启状态
-check_autostart.bat
-```
-
-设置后：
-- ✅ 开机自动启动 GUI 管理器
-- ✅ 服务自动在后台运行
-- ✅ 系统托盘显示图标
-- ✅ 可随时禁用
+两个服务的自启可独立控制。
 
 ### Windows 服务（高级选项）
 
@@ -143,18 +133,15 @@ curl http://127.0.0.1:8000/health
 
 ```
 GoActivity/
-├── setup.bat              # 一键安装脚本
-├── start_service.py       # 服务启动脚本
-├── install_service.bat    # Windows 服务安装
-├── create_shortcut.bat    # 快捷方式创建
-├── build.bat              # 打包脚本
-├── build.spec             # PyInstaller 配置
-├── test_service.bat       # 服务测试
+├── gui_manager.py         # 系统托盘管理器（管理双服务）
+├── start_service.py       # GoActivity 服务启动脚本
+├── generate_icon.py       # 图标生成脚本
+├── create_shortcut.bat    # 快捷方式创建（含图标设置）
+├── install_service.bat    # Windows 服务安装（NSSM）
 ├── requirements.txt       # Python 依赖
 ├── .env                   # 环境配置
-├── INSTALL.md             # 详细安装文档
-├── QUICKSTART.md          # 快速开始指南
-├── app/                   # 应用代码
+├── app/                   # GoActivity FastAPI 应用
+├── we-mp-rss/             # WeRSS 公众号采集服务
 ├── logs/                  # 日志目录
 ├── storage/               # 数据存储
 └── venv/                  # Python 虚拟环境

@@ -3,12 +3,18 @@
 ## Project Overview
 This repository is the working root for the Campus Activity Knowledge Hub project.
 
-There are two cooperating services:
+There are two cooperating services, both managed by the system tray application (`gui_manager.py`):
 
 1. `we-mp-rss/`
-   Collects and exports WeChat public account articles.
+   Collects and exports WeChat public account articles (port 8001).
 2. `app/`
-   GoActivity FastAPI service that ingests articles, stores markdown and images, runs OCR/Vision extraction, and syncs events into Feishu Bitable.
+   GoActivity FastAPI service that ingests articles, stores markdown and images, runs OCR/Vision extraction, and syncs events into Feishu Bitable (port 8000).
+
+The tray application (`gui_manager.py`) provides:
+- Start/stop/restart for both services
+- Independent autostart (Windows registry) for each service
+- Dual-status tray icon (green/red dots for each service)
+- Unified status window showing both services' health
 
 The end-to-end flow currently verified on this machine is:
 
@@ -55,7 +61,13 @@ As of the latest verified run (2026-06-20):
 - `app/utils/`
   Shared utilities: `time.py` (utcnow, parse_datetime_str, parse_to_epoch), `constants.py` (EventStatus, RetentionDecision, EventTimeStatus, ACTIVITY_KIND_LABELS), `lark_cli.py` (lark-cli command building, run_cli_command), `ids.py`, `jsonx.py`, `cron.py` (shared `parse_cron`).
 - `app/static/`
-  Static files for Web management UI. `index.html` is the dashboard.
+  Static files for Web management UI. `index.html` is the dashboard (editorial campus bulletin design).
+- `gui_manager.py`
+  System tray application. Manages both GoActivity (port 8000) and we-mp-rss (port 8001). Creates tray icon, handles service lifecycle, autostart registry, and status window.
+- `generate_icon.py`
+  Generates `app_icon.ico` with dual status indicators. Run `python generate_icon.py` to regenerate.
+- `start_service.py`
+  GoActivity service launcher (used by tray and command line).
 - `alembic/`
   Alembic migration system. Run `alembic upgrade head` to apply pending migrations.
 - `storage/`
@@ -230,7 +242,8 @@ Useful checks:
 GET  /health
 GET  /diagnostics/config
 POST /sync/we-mp-rss/articles
-POST /sync/auto                  # 触发一次完整同步（拉取+抽取+飞书）
+POST /sync/auto                  # 触发一次完整同步（非阻塞，后台执行）
+GET  /sync/status                # 查询当前同步状态（配合前端轮询）
 POST /events/{event_id}/extract
 POST /events/{event_id}/sync-feishu
 POST /setup/feishu-views         # 创建/更新飞书视图（幂等）
@@ -266,7 +279,8 @@ When continuing work, assume the following are already true unless a later failu
 - daily/weekly reports are sent to user's Feishu via `FEISHU_REPORT_USER_ID`
 - Alembic migrations are up to date (4 migrations applied)
 - 144 tests passing, CI pipeline configured
-- Web management UI available at `http://localhost:8000/`
+- Web management UI available at `http://localhost:8000/` (editorial campus bulletin design)
+- Tray application manages both services, with dual-status icon and independent autostart
 - SQLite WAL mode enabled for better concurrent read/write performance
 - New accounts can be added following `docs/adding-accounts.md`
 

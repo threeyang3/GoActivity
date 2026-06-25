@@ -5,212 +5,799 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GoActivity 管理后台</title>
     <style>
+        /* ═══════════════════════════════════════════
+           GoActivity — Editorial Campus Bulletin
+           ═══════════════════════════════════════════ */
+
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Source+Sans+3:wght@300;400;500;600&display=swap');
+
+        :root {
+            --bg:        #faf8f0;
+            --bg-card:   #ffffff;
+            --bg-dark:   #1a2e23;
+            --bg-hover:  #f4f2ea;
+            --text:      #2c2c2c;
+            --text-sec:  #7a7a6e;
+            --text-inv:  #faf8f0;
+            --accent:    #1a5c3a;
+            --accent-lt: #e8f5e9;
+            --amber:     #c8956c;
+            --amber-lt:  #fdf4ec;
+            --red:       #c0392b;
+            --red-lt:    #fceaea;
+            --blue:      #2980b9;
+            --blue-lt:   #eaf4fc;
+            --border:    #e8e6dd;
+            --shadow:    0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03);
+            --shadow-lg: 0 4px 20px rgba(0,0,0,0.08);
+            --radius:    10px;
+            --serif:     'Playfair Display', Georgia, 'Noto Serif SC', serif;
+            --sans:      'Source Sans 3', -apple-system, 'Segoe UI', sans-serif;
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
 
-        /* 顶部导航 */
-        .header { background: #fff; padding: 16px 24px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); display: flex; justify-content: space-between; align-items: center; }
-        .header h1 { font-size: 20px; color: #1a1a1a; }
-        .header .actions { display: flex; gap: 12px; }
-        .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
-        .btn-primary { background: #1677ff; color: #fff; }
-        .btn-primary:hover { background: #4096ff; }
-        .btn-success { background: #52c41a; color: #fff; }
-        .btn-success:hover { background: #73d13d; }
-        .btn-warning { background: #faad14; color: #fff; }
-        .btn-warning:hover { background: #ffc53d; }
-        .btn-danger { background: #ff4d4f; color: #fff; }
-        .btn-danger:hover { background: #ff7875; }
+        body {
+            font-family: var(--sans);
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ── Grain overlay ── */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 9999;
+            opacity: 0.018;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+            background-size: 200px;
+        }
+
+        /* ── Header / Masthead ── */
+        .masthead {
+            background: var(--bg-dark);
+            color: var(--text-inv);
+            padding: 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.15);
+        }
+        .masthead-inner {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 20px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .masthead-brand {
+            display: flex;
+            align-items: baseline;
+            gap: 16px;
+        }
+        .masthead-brand h1 {
+            font-family: var(--serif);
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+        .masthead-brand .edition {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            color: var(--amber);
+            font-weight: 500;
+        }
+        .masthead-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        /* ── Buttons ── */
+        .btn {
+            font-family: var(--sans);
+            font-size: 13px;
+            font-weight: 500;
+            padding: 8px 18px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            letter-spacing: 0.01em;
+        }
+        .btn:active { transform: scale(0.97); }
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+        }
+        .btn-primary:hover { background: #237a4a; }
+        .btn-amber {
+            background: var(--amber);
+            color: #fff;
+        }
+        .btn-amber:hover { background: #b8844f; }
+        .btn-ghost {
+            background: rgba(255,255,255,0.1);
+            color: var(--text-inv);
+            border: 1px solid rgba(255,255,255,0.15);
+        }
+        .btn-ghost:hover { background: rgba(255,255,255,0.18); }
+        .btn-outline {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+        .btn-sm { padding: 5px 12px; font-size: 12px; }
+        .btn-danger { background: var(--red); color: #fff; }
+        .btn-danger:hover { background: #a93226; }
         .btn-feishu { background: #3370ff; color: #fff; }
-        .btn-feishu:hover { background: #5b8ff9; }
-        .btn-sm { padding: 4px 12px; font-size: 12px; }
+        .btn-feishu:hover { background: #2860e0; }
 
-        /* 统计卡片 */
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; }
-        .stat-card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-        .stat-card .label { font-size: 14px; color: #666; margin-bottom: 8px; }
-        .stat-card .value { font-size: 28px; font-weight: 600; }
-        .stat-card .value.success { color: #52c41a; }
-        .stat-card .value.warning { color: #faad14; }
-        .stat-card .value.error { color: #ff4d4f; }
-        .stat-card .value.info { color: #1677ff; }
+        /* ── Container ── */
+        .container {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 28px 32px 60px;
+        }
 
-        /* 面板 */
-        .panel { background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 20px; overflow: hidden; }
-        .panel-header { padding: 16px 20px; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: center; }
-        .panel-header h2 { font-size: 16px; }
-        .panel-body { padding: 20px; }
+        /* ── Section divider ── */
+        .section-divider {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin: 36px 0 20px;
+        }
+        .section-divider h2 {
+            font-family: var(--serif);
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--text);
+            white-space: nowrap;
+        }
+        .section-divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--border);
+        }
 
-        /* 表格 */
-        .table-wrapper { overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #f0f0f0; }
-        th { background: #fafafa; font-weight: 500; font-size: 13px; color: #666; }
-        td { font-size: 14px; }
-        tr:hover { background: #fafafa; }
+        /* ── Stat cards ── */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 16px;
+            margin-bottom: 28px;
+        }
+        .stat-card {
+            background: var(--bg-card);
+            border-radius: var(--radius);
+            padding: 20px 22px;
+            box-shadow: var(--shadow);
+            border-left: 3px solid var(--accent);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+        .stat-card .stat-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-sec);
+            margin-bottom: 8px;
+        }
+        .stat-card .stat-value {
+            font-family: var(--serif);
+            font-size: 32px;
+            font-weight: 700;
+            color: var(--text);
+            line-height: 1;
+        }
+        .stat-card.amber  { border-left-color: var(--amber); }
+        .stat-card.green   { border-left-color: #27ae60; }
+        .stat-card.red     { border-left-color: var(--red); }
+        .stat-card.blue    { border-left-color: var(--blue); }
 
-        /* 状态标签 */
-        .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
-        .status-synced { background: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; }
-        .status-pending { background: #fff7e6; color: #faad14; border: 1px solid #ffd591; }
-        .status-failed { background: #fff2f0; color: #ff4d4f; border: 1px solid #ffccc7; }
-        .status-unknown { background: #f5f5f5; color: #999; border: 1px solid #d9d9d9; }
+        /* ── Cards / Panels ── */
+        .card {
+            background: var(--bg-card);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            margin-bottom: 24px;
+            overflow: hidden;
+        }
+        .card-head {
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .card-head h3 {
+            font-family: var(--serif);
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .card-body { padding: 20px 24px; }
 
-        /* 时间状态 */
-        .time-status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
-        .time-upcoming { background: #e6f7ff; color: #1677ff; border: 1px solid #91d5ff; }
-        .time-past { background: #f5f5f5; color: #999; border: 1px solid #d9d9d9; }
-        .time-ongoing { background: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; }
+        /* ── Today grid ── */
+        .today-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .today-col {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .today-col-head {
+            padding: 12px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+        .today-col.today .today-col-head {
+            background: var(--accent-lt);
+            color: var(--accent);
+        }
+        .today-col.upcoming .today-col-head {
+            background: var(--blue-lt);
+            color: var(--blue);
+        }
+        .today-col-body { padding: 4px 0; }
+        .today-item {
+            padding: 10px 16px;
+            border-bottom: 1px solid #f5f5f0;
+            transition: background 0.15s;
+        }
+        .today-item:last-child { border-bottom: none; }
+        .today-item:hover { background: var(--bg-hover); }
+        .today-item .ti-time {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--accent);
+        }
+        .today-item .ti-title {
+            font-size: 14px;
+            margin-top: 3px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .today-item .ti-title:hover { color: var(--accent); }
+        .today-item .ti-meta {
+            font-size: 12px;
+            color: var(--text-sec);
+            margin-top: 2px;
+        }
+        .today-empty {
+            padding: 20px 16px;
+            color: var(--text-sec);
+            font-size: 13px;
+            font-style: italic;
+        }
 
-        /* 分页 */
-        .pagination { display: flex; justify-content: center; gap: 8px; margin-top: 20px; }
-        .pagination button { padding: 6px 12px; border: 1px solid #d9d9d9; background: #fff; border-radius: 4px; cursor: pointer; }
-        .pagination button:hover { border-color: #1677ff; color: #1677ff; }
-        .pagination button.active { background: #1677ff; color: #fff; border-color: #1677ff; }
-        .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+        /* ── Pending grid ── */
+        .pending-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+        }
+        .pending-box {
+            border-radius: 8px;
+            padding: 16px;
+            border: 1px solid;
+        }
+        .pending-box.warn   { background: var(--amber-lt); border-color: #f0d6b8; }
+        .pending-box.error  { background: var(--red-lt);   border-color: #f0c0bf; }
+        .pending-box.info   { background: var(--blue-lt);  border-color: #b8d8f0; }
+        .pending-box.ok     { background: var(--accent-lt); border-color: #b8e0c0; }
+        .pending-box .pb-title {
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+        .pending-box.warn  .pb-title { color: #8a6530; }
+        .pending-box.error .pb-title { color: var(--red); }
+        .pending-box.info  .pb-title { color: var(--blue); }
+        .pending-box.ok    .pb-title { color: var(--accent); }
+        .pending-box .pb-item {
+            padding: 3px 0;
+            font-size: 13px;
+        }
+        .pending-box .pb-item a {
+            color: inherit;
+            text-decoration: none;
+        }
+        .pending-box .pb-item a:hover { text-decoration: underline; }
+        .pending-box .pb-empty { font-size: 12px; color: var(--text-sec); font-style: italic; }
 
-        /* 筛选栏 */
-        .filters { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-        .filter-select { padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; }
+        /* ── Accuracy row ── */
+        .accuracy-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+        }
+        .acc-item .acc-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-sec);
+            margin-bottom: 6px;
+        }
+        .acc-item .acc-value {
+            font-family: var(--serif);
+            font-size: 22px;
+            font-weight: 700;
+        }
+        .acc-item .acc-detail {
+            font-size: 13px;
+            color: var(--text-sec);
+            margin-top: 4px;
+        }
 
-        /* 加载状态 */
-        .loading { text-align: center; padding: 40px; color: #999; }
-        .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid #d9d9d9; border-top-color: #1677ff; border-radius: 50%; animation: spin 1s linear infinite; }
+        /* ── Sync banner ── */
+        .sync-banner {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            font-size: 14px;
+        }
+        .sync-banner .sb-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .sync-banner .sb-dot.ok { background: #27ae60; }
+        .sync-banner .sb-dot.err { background: var(--red); }
+
+        /* ── Search ── */
+        .search-bar {
+            display: flex;
+            gap: 10px;
+        }
+        .search-input {
+            flex: 1;
+            font-family: var(--sans);
+            font-size: 14px;
+            padding: 10px 16px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg);
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .search-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(26,92,58,0.08);
+        }
+        .search-input::placeholder { color: #b0b0a0; }
+
+        /* ── Filters ── */
+        .filters {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .filter-select {
+            font-family: var(--sans);
+            font-size: 13px;
+            padding: 6px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--bg-card);
+            color: var(--text);
+            cursor: pointer;
+        }
+        .filter-select:focus { outline: none; border-color: var(--accent); }
+
+        /* ── Table ── */
+        .table-wrap { overflow-x: auto; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-sec);
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 2px solid var(--border);
+        }
+        td {
+            padding: 12px 16px;
+            font-size: 14px;
+            border-bottom: 1px solid #f2f0ea;
+        }
+        tr:hover td { background: var(--bg-hover); }
+        td a {
+            color: var(--text);
+            text-decoration: none;
+            font-weight: 500;
+        }
+        td a:hover { color: var(--accent); }
+
+        /* ── Badges ── */
+        .badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.03em;
+        }
+        .badge-synced  { background: var(--accent-lt); color: var(--accent); }
+        .badge-pending { background: var(--amber-lt);  color: #8a6530; }
+        .badge-failed  { background: var(--red-lt);    color: var(--red); }
+        .badge-unknown { background: #f0f0ea;          color: var(--text-sec); }
+
+        .badge-upcoming { background: var(--blue-lt);   color: var(--blue); }
+        .badge-past     { background: #f0f0ea;          color: var(--text-sec); }
+        .badge-ongoing  { background: var(--accent-lt); color: var(--accent); }
+
+        /* ── Pagination ── */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 6px;
+            margin-top: 20px;
+        }
+        .pagination button {
+            font-family: var(--sans);
+            padding: 6px 12px;
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.15s;
+        }
+        .pagination button:hover:not(:disabled) {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        .pagination button.active {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
+        .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+        .pagination .pg-info { font-size: 13px; color: var(--text-sec); padding: 0 8px; }
+
+        /* ── Loading ── */
+        .loading {
+            text-align: center;
+            padding: 36px;
+            color: var(--text-sec);
+            font-size: 14px;
+        }
+        .spinner {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* 模态框 */
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; overflow-y: auto; }
-        .modal-content { background: #fff; margin: 40px auto; padding: 24px; border-radius: 8px; max-width: 800px; max-height: 90vh; overflow-y: auto; }
-        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #f0f0f0; padding-bottom: 16px; }
-        .modal-header h2 { font-size: 18px; }
-        .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: #999; }
-        .modal-close:hover { color: #333; }
-        .detail-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
-        .detail-item { margin-bottom: 12px; }
-        .detail-label { font-size: 12px; color: #999; margin-bottom: 4px; }
+        /* ── Modal ── */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(20,20,15,0.5);
+            z-index: 1000;
+            overflow-y: auto;
+            backdrop-filter: blur(2px);
+        }
+        .modal-box {
+            background: var(--bg-card);
+            margin: 48px auto;
+            border-radius: 14px;
+            max-width: 780px;
+            box-shadow: var(--shadow-lg);
+            overflow: hidden;
+            animation: modalIn 0.25s ease;
+        }
+        @keyframes modalIn {
+            from { opacity: 0; transform: translateY(16px) scale(0.98); }
+            to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .modal-head {
+            padding: 20px 28px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-head h2 {
+            font-family: var(--serif);
+            font-size: 20px;
+            font-weight: 600;
+        }
+        .modal-close {
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: var(--bg);
+            border-radius: 50%;
+            font-size: 18px;
+            cursor: pointer;
+            color: var(--text-sec);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+        }
+        .modal-close:hover { background: var(--border); color: var(--text); }
+        .modal-content { padding: 24px 28px 28px; }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0 28px;
+        }
+        .detail-item {
+            padding: 10px 0;
+            border-bottom: 1px solid #f5f5f0;
+        }
+        .detail-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-sec);
+            margin-bottom: 3px;
+        }
         .detail-value { font-size: 14px; }
-        .detail-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid #f0f0f0; }
-        .detail-section h3 { font-size: 14px; margin-bottom: 12px; color: #666; }
-        .poster-images { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-        .poster-images img { width: 100px; height: 100px; object-fit: cover; border-radius: 4px; border: 1px solid #f0f0f0; }
+        .detail-section {
+            margin-top: 24px;
+            padding-top: 20px;
+            border-top: 2px solid var(--border);
+        }
+        .detail-section h4 {
+            font-family: var(--serif);
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: var(--accent);
+        }
+        .poster-grid {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+        .poster-grid img {
+            width: 100px;
+            height: 100px;
+            object-fit: cover;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            transition: transform 0.2s;
+        }
+        .poster-grid img:hover { transform: scale(1.05); }
+        .modal-actions {
+            margin-top: 24px;
+            padding-top: 20px;
+            border-top: 2px solid var(--border);
+            display: flex;
+            gap: 10px;
+        }
+        .tag-pill {
+            display: inline-block;
+            padding: 3px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            background: var(--bg);
+            color: var(--text-sec);
+            margin-right: 6px;
+            margin-bottom: 4px;
+        }
 
-        /* 搜索框 */
-        .search-box { display: flex; gap: 8px; margin-bottom: 16px; }
-        .search-input { flex: 1; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; }
-        .search-input:focus { outline: none; border-color: #1677ff; }
+        /* ── Sync progress modal ── */
+        .sync-modal .modal-box { max-width: 480px; text-align: center; }
+        .sync-spinner {
+            width: 48px; height: 48px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 20px;
+        }
+        .sync-phase {
+            font-family: var(--serif);
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        .sync-msg {
+            font-size: 14px;
+            color: var(--text-sec);
+            margin-bottom: 24px;
+        }
+        .sync-done-icon {
+            width: 56px; height: 56px;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 28px;
+            margin: 0 auto 16px;
+        }
+        .sync-done-icon.ok  { background: var(--accent-lt); color: var(--accent); }
+        .sync-done-icon.err { background: var(--red-lt);    color: var(--red); }
+        .sync-result {
+            text-align: left;
+            background: var(--bg);
+            border-radius: 8px;
+            padding: 16px 20px;
+            margin-top: 16px;
+            font-size: 14px;
+            line-height: 1.8;
+        }
 
-        /* 今日活动 */
-        .today-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
-        .today-card { background: #f6ffed; border: 1px solid #b7eb8f; border-radius: 8px; padding: 16px; }
-        .today-card h3 { font-size: 14px; color: #52c41a; margin-bottom: 12px; }
-        .today-item { padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
-        .today-item:last-child { border-bottom: none; }
-        .today-item .time { font-size: 12px; color: #1677ff; }
-        .today-item .title { font-size: 14px; margin-top: 4px; cursor: pointer; }
-        .today-item .title:hover { color: #1677ff; }
+        /* ── Toast ── */
+        .toast-container {
+            position: fixed;
+            top: 24px;
+            right: 24px;
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .toast {
+            padding: 14px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            box-shadow: var(--shadow-lg);
+            animation: toastIn 0.3s ease;
+            max-width: 360px;
+        }
+        .toast.success { background: var(--accent); color: #fff; }
+        .toast.error   { background: var(--red); color: #fff; }
+        .toast.info    { background: var(--bg-dark); color: var(--text-inv); }
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateX(40px); }
+            to   { opacity: 1; transform: translateX(0); }
+        }
 
-        /* 响应式 */
+        /* ── Responsive ── */
+        @media (max-width: 1024px) {
+            .stats-row { grid-template-columns: repeat(3, 1fr); }
+            .pending-grid { grid-template-columns: repeat(2, 1fr); }
+            .accuracy-grid { grid-template-columns: repeat(2, 1fr); }
+        }
         @media (max-width: 768px) {
-            .stats-grid { grid-template-columns: repeat(2, 1fr); }
-            .header { flex-direction: column; gap: 12px; }
-            .detail-grid { grid-template-columns: 1fr; }
+            .masthead-inner { flex-direction: column; gap: 12px; text-align: center; }
+            .masthead-actions { flex-wrap: wrap; justify-content: center; }
+            .container { padding: 20px 16px 40px; }
+            .stats-row { grid-template-columns: repeat(2, 1fr); }
             .today-grid { grid-template-columns: 1fr; }
+            .pending-grid { grid-template-columns: 1fr; }
+            .accuracy-grid { grid-template-columns: 1fr 1fr; }
+            .detail-grid { grid-template-columns: 1fr; }
+            .modal-box { margin: 16px; }
         }
     </style>
 </head>
 <body>
+    <!-- Toast container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- Masthead -->
+    <header class="masthead">
+        <div class="masthead-inner">
+            <div class="masthead-brand">
+                <h1>GoActivity</h1>
+                <span class="edition">校园活动知识库 · 管理后台</span>
+            </div>
+            <div class="masthead-actions">
+                <button class="btn btn-feishu" id="btn-feishu" onclick="openFeishu()" style="display:none">📋 飞书表格</button>
+                <button class="btn btn-ghost" onclick="triggerSync()">🔄 触发同步</button>
+                <button class="btn btn-ghost" onclick="sendReport('daily')">📊 日报</button>
+                <button class="btn btn-ghost" onclick="sendReport('weekly')">📈 周报</button>
+                <button class="btn btn-ghost" onclick="location.reload()">↻</button>
+            </div>
+        </div>
+    </header>
+
     <div class="container">
-        <!-- 顶部导航 -->
-        <div class="header">
-            <h1>📚 GoActivity 管理后台</h1>
-            <div class="actions">
-                <button class="btn btn-feishu" id="btn-feishu" onclick="openFeishu()" style="display:none">📋 飞书多维表格</button>
-                <button class="btn btn-primary" onclick="triggerSync()">🔄 触发同步</button>
-                <button class="btn btn-success" onclick="sendReport('daily')">📊 发送日报</button>
-                <button class="btn btn-warning" onclick="sendReport('weekly')">📈 发送周报</button>
-                <button class="btn" onclick="location.reload()">🔃 刷新</button>
+        <!-- ══ 今日纵览 ══ -->
+        <div class="section-divider"><h2>今日纵览</h2></div>
+        <div class="card">
+            <div class="card-body">
+                <div id="today-events" class="loading"><span class="spinner"></span>加载中…</div>
             </div>
         </div>
 
-        <!-- 今日活动 -->
-        <div class="panel">
-            <div class="panel-header">
-                <h2>📅 今日活动</h2>
-            </div>
-            <div class="panel-body">
-                <div id="today-events" class="loading"><span class="spinner"></span> 加载中...</div>
+        <!-- ══ 待办事项 ══ -->
+        <div class="section-divider"><h2>待办事项</h2></div>
+        <div class="card">
+            <div class="card-body">
+                <div id="pending-items" class="loading"><span class="spinner"></span>加载中…</div>
             </div>
         </div>
 
-        <!-- 待办事项 -->
-        <div class="panel">
-            <div class="panel-header">
-                <h2>📋 待办事项</h2>
-            </div>
-            <div class="panel-body">
-                <div id="pending-items" class="loading"><span class="spinner"></span> 加载中...</div>
-            </div>
-        </div>
-
-        <!-- 统计卡片 -->
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="label">📄 文章总数</div>
-                <div class="value info" id="stat-articles">-</div>
+        <!-- ══ 数据总览 ══ -->
+        <div class="section-divider"><h2>数据总览</h2></div>
+        <div class="stats-row">
+            <div class="stat-card blue">
+                <div class="stat-label">文章总数</div>
+                <div class="stat-value" id="stat-articles">—</div>
             </div>
             <div class="stat-card">
-                <div class="label">📅 活动总数</div>
-                <div class="value" id="stat-events">-</div>
+                <div class="stat-label">活动总数</div>
+                <div class="stat-value" id="stat-events">—</div>
             </div>
-            <div class="stat-card">
-                <div class="label">✅ 已同步</div>
-                <div class="value success" id="stat-synced">-</div>
+            <div class="stat-card green">
+                <div class="stat-label">已同步</div>
+                <div class="stat-value" id="stat-synced">—</div>
             </div>
-            <div class="stat-card">
-                <div class="label">⏳ 待处理</div>
-                <div class="value warning" id="stat-pending">-</div>
+            <div class="stat-card amber">
+                <div class="stat-label">待处理</div>
+                <div class="stat-value" id="stat-pending">—</div>
             </div>
-            <div class="stat-card">
-                <div class="label">❌ 同步失败</div>
-                <div class="value error" id="stat-failed">-</div>
-            </div>
-        </div>
-
-        <!-- 数据质量 -->
-        <div class="panel">
-            <div class="panel-header">
-                <h2>📊 数据质量</h2>
-            </div>
-            <div class="panel-body">
-                <div id="accuracy-stats" class="loading"><span class="spinner"></span> 加载中...</div>
+            <div class="stat-card red">
+                <div class="stat-label">同步失败</div>
+                <div class="stat-value" id="stat-failed">—</div>
             </div>
         </div>
 
-        <!-- 最近同步 -->
-        <div class="panel">
-            <div class="panel-header">
-                <h2>🔄 最近同步</h2>
-            </div>
-            <div class="panel-body">
-                <div id="latest-sync" class="loading"><span class="spinner"></span> 加载中...</div>
+        <!-- ══ 数据质量 ══ -->
+        <div class="section-divider"><h2>数据质量</h2></div>
+        <div class="card">
+            <div class="card-body">
+                <div id="accuracy-stats" class="loading"><span class="spinner"></span>加载中…</div>
             </div>
         </div>
 
-        <!-- 搜索 -->
-        <div class="panel">
-            <div class="panel-body">
-                <div class="search-box">
-                    <input type="text" class="search-input" id="search-input" placeholder="搜索活动（标题、地点、嘉宾、主办方）..." onkeyup="handleSearchKey(event)">
+        <!-- ══ 最近同步 ══ -->
+        <div class="section-divider"><h2>最近同步</h2></div>
+        <div class="card">
+            <div class="card-body">
+                <div id="latest-sync" class="loading"><span class="spinner"></span>加载中…</div>
+            </div>
+        </div>
+
+        <!-- ══ 搜索 ══ -->
+        <div class="card">
+            <div class="card-body">
+                <div class="search-bar">
+                    <input type="text" class="search-input" id="search-input"
+                           placeholder="搜索活动 — 标题、地点、嘉宾、主办方…"
+                           onkeyup="handleSearchKey(event)">
                     <button class="btn btn-primary" onclick="searchEvents()">🔍 搜索</button>
                 </div>
             </div>
         </div>
 
-        <!-- 活动列表 -->
-        <div class="panel">
-            <div class="panel-header">
-                <h2>📅 活动列表</h2>
+        <!-- ══ 活动列表 ══ -->
+        <div class="section-divider"><h2>活动列表</h2></div>
+        <div class="card">
+            <div class="card-head">
+                <h3>全部活动</h3>
                 <div class="filters">
                     <select class="filter-select" id="filter-time" onchange="loadEvents()">
                         <option value="">全部时间</option>
@@ -238,8 +825,8 @@
                     </select>
                 </div>
             </div>
-            <div class="panel-body">
-                <div class="table-wrapper">
+            <div class="card-body">
+                <div class="table-wrap">
                     <table>
                         <thead>
                             <tr>
@@ -247,13 +834,13 @@
                                 <th>分类</th>
                                 <th>开始时间</th>
                                 <th>状态</th>
-                                <th>时间状态</th>
+                                <th>时间</th>
                                 <th>置信度</th>
                                 <th>操作</th>
                             </tr>
                         </thead>
                         <tbody id="events-table">
-                            <tr><td colspan="7" class="loading"><span class="spinner"></span> 加载中...</td></tr>
+                            <tr><td colspan="7" class="loading"><span class="spinner"></span>加载中…</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -261,13 +848,11 @@
             </div>
         </div>
 
-        <!-- 同步日志 -->
-        <div class="panel">
-            <div class="panel-header">
-                <h2>📝 同步日志</h2>
-            </div>
-            <div class="panel-body">
-                <div class="table-wrapper">
+        <!-- ══ 同步日志 ══ -->
+        <div class="section-divider"><h2>同步日志</h2></div>
+        <div class="card">
+            <div class="card-body">
+                <div class="table-wrap">
                     <table>
                         <thead>
                             <tr>
@@ -279,20 +864,18 @@
                             </tr>
                         </thead>
                         <tbody id="logs-table">
-                            <tr><td colspan="5" class="loading"><span class="spinner"></span> 加载中...</td></tr>
+                            <tr><td colspan="5" class="loading"><span class="spinner"></span>加载中…</td></tr>
                         </tbody>
                     </table>
                 </div>
             </div>
         </div>
 
-        <!-- 同步运行记录 -->
-        <div class="panel">
-            <div class="panel-header">
-                <h2>🏃 同步运行记录</h2>
-            </div>
-            <div class="panel-body">
-                <div class="table-wrapper">
+        <!-- ══ 同步运行记录 ══ -->
+        <div class="section-divider"><h2>同步运行记录</h2></div>
+        <div class="card">
+            <div class="card-body">
+                <div class="table-wrap">
                     <table>
                         <thead>
                             <tr>
@@ -305,7 +888,7 @@
                             </tr>
                         </thead>
                         <tbody id="runs-table">
-                            <tr><td colspan="6" class="loading"><span class="spinner"></span> 加载中...</td></tr>
+                            <tr><td colspan="6" class="loading"><span class="spinner"></span>加载中…</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -313,25 +896,45 @@
         </div>
     </div>
 
-    <!-- 活动详情模态框 -->
-    <div id="event-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
+    <!-- Modal -->
+    <div id="event-modal" class="modal-overlay" onclick="if(event.target===this)closeModal()">
+        <div class="modal-box">
+            <div class="modal-head">
                 <h2 id="modal-title">活动详情</h2>
-                <button class="modal-close" onclick="closeModal()">&times;</button>
+                <button class="modal-close" onclick="closeModal()">✕</button>
             </div>
-            <div id="modal-body">
-                <!-- 内容由 JavaScript 动态填充 -->
+            <div class="modal-content" id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Sync progress modal -->
+    <div id="sync-modal" class="modal-overlay sync-modal" onclick="if(event.target===this)this.style.display='none'">
+        <div class="modal-box">
+            <div class="modal-content" id="sync-modal-body">
+                <!-- filled by JS -->
             </div>
         </div>
     </div>
 
     <script>
-        // 全局状态
+        /* ═══════════════════════════════════════════
+           GoActivity — Dashboard Logic
+           ═══════════════════════════════════════════ */
+
         let currentPage = 1;
         const PAGE_SIZE = 20;
 
-        // API 请求封装
+        // ── Toast notifications ──
+        function toast(msg, type = 'info') {
+            const c = document.getElementById('toast-container');
+            const t = document.createElement('div');
+            t.className = `toast ${type}`;
+            t.textContent = msg;
+            c.appendChild(t);
+            setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; setTimeout(() => t.remove(), 300); }, 3500);
+        }
+
+        // ── API ──
         async function api(url, options = {}) {
             try {
                 const resp = await fetch(url, options);
@@ -343,7 +946,7 @@
             }
         }
 
-        // 加载统计数据
+        // ── Load stats ──
         async function loadStats() {
             try {
                 const data = await api('/dashboard/stats');
@@ -353,28 +956,27 @@
                 document.getElementById('stat-pending').textContent = data.events.pending;
                 document.getElementById('stat-failed').textContent = data.events.failed;
 
-                // 最近同步
                 const syncEl = document.getElementById('latest-sync');
                 if (data.latest_sync) {
                     const s = data.latest_sync;
-                    const statusClass = s.status === 'success' ? 'success' : 'error';
+                    const ok = s.status === 'success';
                     syncEl.innerHTML = `
-                        <div style="display:flex;gap:24px;align-items:center;">
-                            <span>来源: <strong>${s.source}</strong></span>
-                            <span>状态: <span class="status status-${statusClass}">${s.status}</span></span>
-                            <span>导入: <strong>${s.imported_count}</strong> 篇</span>
-                            <span>时间: ${s.started_at ? new Date(s.started_at).toLocaleString() : '-'}</span>
-                        </div>
-                    `;
+                        <div class="sync-banner">
+                            <span class="sb-dot ${ok ? 'ok' : 'err'}"></span>
+                            <span>来源 <strong>${esc(s.source)}</strong></span>
+                            <span class="badge ${ok ? 'badge-synced' : 'badge-failed'}">${s.status}</span>
+                            <span>导入 <strong>${s.imported_count}</strong> 篇</span>
+                            <span style="color:var(--text-sec)">${s.started_at ? new Date(s.started_at).toLocaleString() : '—'}</span>
+                        </div>`;
                 } else {
-                    syncEl.innerHTML = '<span style="color:#999">暂无同步记录</span>';
+                    syncEl.innerHTML = '<span style="color:var(--text-sec);font-style:italic">暂无同步记录</span>';
                 }
             } catch (e) {
-                document.getElementById('latest-sync').innerHTML = '<span style="color:#ff4d4f">加载失败</span>';
+                document.getElementById('latest-sync').innerHTML = '<span style="color:var(--red)">加载失败</span>';
             }
         }
 
-        // 加载今日活动
+        // ── Load today events ──
         async function loadTodayEvents() {
             try {
                 const data = await api('/dashboard/today');
@@ -382,353 +984,224 @@
 
                 let html = '<div class="today-grid">';
 
-                // 今日活动
-                html += '<div class="today-card"><h3>📌 今日活动</h3>';
-                if (data.today.length === 0) {
-                    html += '<div style="color:#999;font-size:13px">今日暂无活动</div>';
+                // Today
+                html += '<div class="today-col today"><div class="today-col-head">📌 今日活动</div><div class="today-col-body">';
+                if (!data.today.length) {
+                    html += '<div class="today-empty">今日暂无活动</div>';
                 } else {
                     data.today.forEach(e => {
-                        html += `
-                            <div class="today-item">
-                                <div class="time">${e.start_time || '时间待定'}</div>
-                                <div class="title" onclick="showEventDetail('${e.event_id}')">${escapeHtml(e.title)}</div>
-                                <div style="font-size:12px;color:#666">${escapeHtml(e.location || '')} ${e.speaker ? '· ' + escapeHtml(e.speaker) : ''}</div>
-                            </div>
-                        `;
+                        html += `<div class="today-item">
+                            <div class="ti-time">${e.start_time || '时间待定'}</div>
+                            <div class="ti-title" onclick="showEventDetail('${e.event_id}')">${esc(e.title)}</div>
+                            <div class="ti-meta">${esc(e.location || '')}${e.speaker ? ' · ' + esc(e.speaker) : ''}</div>
+                        </div>`;
                     });
                 }
-                html += '</div>';
+                html += '</div></div>';
 
-                // 即将到来
-                html += '<div class="today-card"><h3>🔜 即将到来</h3>';
-                if (data.upcoming.length === 0) {
-                    html += '<div style="color:#999;font-size:13px">暂无即将开始的活动</div>';
+                // Upcoming
+                html += '<div class="today-col upcoming"><div class="today-col-head">🔜 即将到来</div><div class="today-col-body">';
+                if (!data.upcoming.length) {
+                    html += '<div class="today-empty">暂无即将开始的活动</div>';
                 } else {
                     data.upcoming.forEach(e => {
-                        html += `
-                            <div class="today-item">
-                                <div class="time">${e.start_time || '时间待定'}</div>
-                                <div class="title" onclick="showEventDetail('${e.event_id}')">${escapeHtml(e.title)}</div>
-                                <div style="font-size:12px;color:#666">${escapeHtml(e.location || '')}</div>
-                            </div>
-                        `;
+                        html += `<div class="today-item">
+                            <div class="ti-time">${e.start_time || '时间待定'}</div>
+                            <div class="ti-title" onclick="showEventDetail('${e.event_id}')">${esc(e.title)}</div>
+                            <div class="ti-meta">${esc(e.location || '')}</div>
+                        </div>`;
                     });
                 }
-                html += '</div>';
+                html += '</div></div></div>';
 
-                html += '</div>';
                 el.innerHTML = html;
             } catch (e) {
-                document.getElementById('today-events').innerHTML = '<span style="color:#ff4d4f">加载失败</span>';
+                document.getElementById('today-events').innerHTML = '<span style="color:var(--red)">加载失败</span>';
             }
         }
 
-        // 加载待办事项
+        // ── Load pending items ──
         async function loadPendingItems() {
             try {
                 const data = await api('/dashboard/pending');
                 const el = document.getElementById('pending-items');
 
-                let html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px;">';
+                const boxes = [
+                    { key: 'low_confidence', cls: 'warn',  icon: '⚠️', label: '低置信度' },
+                    { key: 'failed_sync',    cls: 'error', icon: '❌', label: '同步失败' },
+                    { key: 'pending_sync',   cls: 'info',  icon: '📤', label: '待同步' },
+                    { key: 'needs_retry',    cls: 'ok',    icon: '🖼️', label: '图片重试' },
+                ];
 
-                // 低置信度
-                html += `
-                    <div style="background:#fff7e6;border:1px solid #ffd591;border-radius:8px;padding:16px;">
-                        <div style="font-size:14px;font-weight:500;color:#faad14;margin-bottom:12px;">⚠️ 低置信度 (${data.low_confidence.count})</div>
-                        ${data.low_confidence.items.length === 0 ? '<div style="color:#999;font-size:13px">无</div>' :
-                            data.low_confidence.items.map(e => `
-                                <div style="padding:4px 0;font-size:13px;">
-                                    <a href="#" onclick="showEventDetail('${e.event_id}');return false" style="color:inherit;text-decoration:none">${escapeHtml(e.title)}</a>
-                                    <span style="color:#ff4d4f;margin-left:4px">${(e.confidence * 100).toFixed(0)}%</span>
-                                </div>
-                            `).join('')}
-                    </div>
-                `;
-
-                // 同步失败
-                html += `
-                    <div style="background:#fff2f0;border:1px solid #ffccc7;border-radius:8px;padding:16px;">
-                        <div style="font-size:14px;font-weight:500;color:#ff4d4f;margin-bottom:12px;">❌ 同步失败 (${data.failed_sync.count})</div>
-                        ${data.failed_sync.items.length === 0 ? '<div style="color:#999;font-size:13px">无</div>' :
-                            data.failed_sync.items.map(e => `
-                                <div style="padding:4px 0;font-size:13px;">
-                                    <a href="#" onclick="showEventDetail('${e.event_id}');return false" style="color:inherit;text-decoration:none">${escapeHtml(e.title)}</a>
-                                </div>
-                            `).join('')}
-                    </div>
-                `;
-
-                // 待同步
-                html += `
-                    <div style="background:#e6f7ff;border:1px solid #91d5ff;border-radius:8px;padding:16px;">
-                        <div style="font-size:14px;font-weight:500;color:#1677ff;margin-bottom:12px;">📤 待同步 (${data.pending_sync.count})</div>
-                        ${data.pending_sync.items.length === 0 ? '<div style="color:#999;font-size:13px">无</div>' :
-                            data.pending_sync.items.map(e => `
-                                <div style="padding:4px 0;font-size:13px;">
-                                    <a href="#" onclick="showEventDetail('${e.event_id}');return false" style="color:inherit;text-decoration:none">${escapeHtml(e.title)}</a>
-                                </div>
-                            `).join('')}
-                    </div>
-                `;
-
-                // 图片重试
-                html += `
-                    <div style="background:#f6ffed;border:1px solid #b7eb8f;border-radius:8px;padding:16px;">
-                        <div style="font-size:14px;font-weight:500;color:#52c41a;margin-bottom:12px;">🖼️ 图片重试 (${data.needs_retry.count})</div>
-                        ${data.needs_retry.items.length === 0 ? '<div style="color:#999;font-size:13px">无</div>' :
-                            data.needs_retry.items.map(e => `
-                                <div style="padding:4px 0;font-size:13px;">
-                                    <a href="#" onclick="showEventDetail('${e.event_id}');return false" style="color:inherit;text-decoration:none">${escapeHtml(e.title)}</a>
-                                </div>
-                            `).join('')}
-                    </div>
-                `;
-
+                let html = '<div class="pending-grid">';
+                boxes.forEach(b => {
+                    const d = data[b.key];
+                    html += `<div class="pending-box ${b.cls}">
+                        <div class="pb-title">${b.icon} ${b.label}（${d.count}）</div>`;
+                    if (!d.items.length) {
+                        html += '<div class="pb-empty">无</div>';
+                    } else {
+                        d.items.forEach(e => {
+                            const extra = b.key === 'low_confidence'
+                                ? `<span style="color:var(--red);margin-left:6px">${(e.confidence*100).toFixed(0)}%</span>`
+                                : '';
+                            html += `<div class="pb-item"><a href="#" onclick="showEventDetail('${e.event_id}');return false">${esc(e.title)}</a>${extra}</div>`;
+                        });
+                    }
+                    html += '</div>';
+                });
                 html += '</div>';
                 el.innerHTML = html;
             } catch (e) {
-                document.getElementById('pending-items').innerHTML = '<span style="color:#ff4d4f">加载失败</span>';
+                document.getElementById('pending-items').innerHTML = '<span style="color:var(--red)">加载失败</span>';
             }
         }
 
-        // 搜索活动
-        function handleSearchKey(event) {
-            if (event.key === 'Enter') {
-                searchEvents();
-            }
-        }
-
-        async function searchEvents() {
-            const query = document.getElementById('search-input').value.trim();
-            if (!query) {
-                loadEvents();
-                return;
-            }
-
-            try {
-                const data = await api(`/dashboard/search?q=${encodeURIComponent(query)}`);
-                const tbody = document.getElementById('events-table');
-
-                if (data.items.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999">未找到匹配的活动</td></tr>';
-                } else {
-                    tbody.innerHTML = data.items.map(e => `
-                        <tr>
-                            <td><a href="#" onclick="showEventDetail('${e.event_id}');return false">${escapeHtml(e.title)}</a></td>
-                            <td>${escapeHtml(e.category_1)}</td>
-                            <td>${e.start_time || '-'}</td>
-                            <td><span class="status status-${statusClass(e.status)}">${statusLabel(e.status)}</span></td>
-                            <td><span class="time-status time-${e.event_time_status}">${timeStatusLabel(e.event_time_status)}</span></td>
-                            <td>${(e.confidence * 100).toFixed(0)}%</td>
-                            <td>
-                                ${e.feishu_record_id ? '<span class="status status-synced">已同步</span>' : `<button class="btn btn-primary btn-sm" onclick="syncEvent('${e.event_id}')">同步</button>`}
-                            </td>
-                        </tr>
-                    `).join('');
-                }
-
-                // 更新分页
-                document.getElementById('events-pagination').innerHTML = `<span style="padding:6px;color:#999">搜索结果: ${data.total} 条</span>`;
-            } catch (e) {
-                document.getElementById('events-table').innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ff4d4f">搜索失败</td></tr>';
-            }
-        }
-
-        // 显示活动详情
-        async function showEventDetail(eventId) {
-            try {
-                const data = await api(`/dashboard/events/${eventId}`);
-                if (data.error) {
-                    alert(data.error);
-                    return;
-                }
-
-                document.getElementById('modal-title').textContent = data.title;
-
-                let html = '<div class="detail-grid">';
-
-                // 基本信息
-                html += `
-                    <div class="detail-item">
-                        <div class="detail-label">活动类型</div>
-                        <div class="detail-value">${escapeHtml(data.activity_kind)} (${escapeHtml(data.activity_kind_reason)})</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">一级分类</div>
-                        <div class="detail-value">${escapeHtml(data.category_1)}</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">二级分类</div>
-                        <div class="detail-value">${escapeHtml(data.category_2 || '无')}</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">开始时间</div>
-                        <div class="detail-value">${escapeHtml(data.start_time || '待定')}</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">结束时间</div>
-                        <div class="detail-value">${escapeHtml(data.end_time || '待定')}</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">活动地点</div>
-                        <div class="detail-value">${escapeHtml(data.location || '待定')}</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">嘉宾</div>
-                        <div class="detail-value">${escapeHtml(data.speaker || '待定')}</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">主办方</div>
-                        <div class="detail-value">${escapeHtml(data.organizer || '待定')}</div>
-                    </div>
-                `;
-                html += '</div>';
-
-                // 状态信息
-                html += '<div class="detail-section"><h3>状态信息</h3><div class="detail-grid">';
-                html += `
-                    <div class="detail-item">
-                        <div class="detail-label">状态</div>
-                        <div class="detail-value"><span class="status status-${statusClass(data.status)}">${statusLabel(data.status)}</span></div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">时间状态</div>
-                        <div class="detail-value"><span class="time-status time-${data.event_time_status}">${timeStatusLabel(data.event_time_status)}</span></div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">保留决策</div>
-                        <div class="detail-value">${escapeHtml(data.retention_decision)}</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">置信度</div>
-                        <div class="detail-value">${(data.confidence * 100).toFixed(1)}%</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">飞书记录 ID</div>
-                        <div class="detail-value">${data.feishu_record_id || '未同步'}</div>
-                    </div>
-                    <div class="detail-item">
-                        <div class="detail-label">用户置顶</div>
-                        <div class="detail-value">${data.user_keep ? '是' : '否'}</div>
-                    </div>
-                `;
-                html += '</div></div>';
-
-                // 摘要
-                if (data.summary) {
-                    html += `<div class="detail-section"><h3>摘要</h3><div>${escapeHtml(data.summary)}</div></div>`;
-                }
-
-                // 标签
-                if (data.tags && data.tags.length > 0) {
-                    html += `<div class="detail-section"><h3>标签</h3><div>${data.tags.map(t => `<span class="status status-pending" style="margin-right:8px">${escapeHtml(t)}</span>`).join('')}</div></div>`;
-                }
-
-                // 报名信息
-                if (data.registration || data.registration_url) {
-                    html += '<div class="detail-section"><h3>报名信息</h3>';
-                    if (data.registration) html += `<div>${escapeHtml(data.registration)}</div>`;
-                    if (data.registration_url) html += `<div><a href="${data.registration_url}" target="_blank">报名链接</a></div>`;
-                    if (data.registration_deadline) html += `<div>报名截止: ${escapeHtml(data.registration_deadline)}</div>`;
-                    if (data.participant_limit) html += `<div>人数限制: ${escapeHtml(data.participant_limit)}</div>`;
-                    html += '</div>';
-                }
-
-                // 海报图片
-                if (data.poster_images && data.poster_images.length > 0) {
-                    html += '<div class="detail-section"><h3>海报图片</h3><div class="poster-images">';
-                    data.poster_images.forEach(img => {
-                        html += `<img src="/storage/images/${img}" onerror="this.style.display='none'" alt="海报">`;
-                    });
-                    html += '</div></div>';
-                }
-
-                // 来源文章
-                if (data.article) {
-                    html += '<div class="detail-section"><h3>来源文章</h3>';
-                    html += `<div>公众号: ${escapeHtml(data.article.mp_name)}</div>`;
-                    html += `<div>发布时间: ${escapeHtml(data.article.publish_time)}</div>`;
-                    if (data.article.url) html += `<div><a href="${data.article.url}" target="_blank">查看原文</a></div>`;
-                    html += '</div>';
-                }
-
-                // 操作按钮
-                html += '<div class="detail-section" style="display:flex;gap:12px">';
-                html += `<button class="btn btn-primary" onclick="syncEvent('${data.event_id}');closeModal()">同步到飞书</button>`;
-                html += `<button class="btn btn-success" onclick="keepEvent('${data.event_id}', true);closeModal()">置顶</button>`;
-                html += `<button class="btn" onclick="closeModal()">关闭</button>`;
-                html += '</div>';
-
-                document.getElementById('modal-body').innerHTML = html;
-                document.getElementById('event-modal').style.display = 'block';
-            } catch (e) {
-                alert('加载活动详情失败: ' + e.message);
-            }
-        }
-
-        function closeModal() {
-            document.getElementById('event-modal').style.display = 'none';
-        }
-
-        // 点击模态框外部关闭
-        window.onclick = function(event) {
-            const modal = document.getElementById('event-modal');
-            if (event.target === modal) {
-                modal.style.display = 'none';
-            }
-        }
-
-        // 加载数据质量统计
+        // ── Load accuracy ──
         async function loadAccuracy() {
             try {
                 const data = await api('/dashboard/accuracy');
                 const el = document.getElementById('accuracy-stats');
 
-                // 置信度分布
                 const confMap = {};
-                data.confidence_distribution.forEach(item => { confMap[item.level] = item.count; });
-                const lowConf = confMap['low'] || 0;
-                const medConf = confMap['medium'] || 0;
-                const highConf = confMap['high'] || 0;
-
-                // 分类分布（取前5）
-                const topCategories = data.category_distribution.slice(0, 5);
-
-                // 低置信度占比
-                const lowConfPercent = data.total_with_confidence > 0
-                    ? ((lowConf / data.total_with_confidence) * 100).toFixed(1)
-                    : '0';
+                data.confidence_distribution.forEach(i => { confMap[i.level] = i.count; });
+                const lo = confMap['low'] || 0, med = confMap['medium'] || 0, hi = confMap['high'] || 0;
+                const topCats = data.category_distribution.slice(0, 5);
+                const loPct = data.total_with_confidence > 0 ? ((lo / data.total_with_confidence) * 100).toFixed(1) : '0';
 
                 el.innerHTML = `
-                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;">
-                        <div>
-                            <div style="font-size:13px;color:#666;margin-bottom:4px;">置信度分布</div>
-                            <div style="display:flex;gap:12px;">
-                                <span style="color:#52c41a">高: ${highConf}</span>
-                                <span style="color:#faad14">中: ${medConf}</span>
-                                <span style="color:#ff4d4f">低: ${lowConf}</span>
+                    <div class="accuracy-grid">
+                        <div class="acc-item">
+                            <div class="acc-label">置信度分布</div>
+                            <div class="acc-detail">
+                                <span style="color:#27ae60">高 ${hi}</span> ·
+                                <span style="color:var(--amber)">中 ${med}</span> ·
+                                <span style="color:var(--red)">低 ${lo}</span>
                             </div>
                         </div>
-                        <div>
-                            <div style="font-size:13px;color:#666;margin-bottom:4px;">低置信度占比</div>
-                            <div style="font-size:20px;font-weight:600;color:${parseFloat(lowConfPercent) > 20 ? '#ff4d4f' : '#52c41a'}">${lowConfPercent}%</div>
+                        <div class="acc-item">
+                            <div class="acc-label">低置信度占比</div>
+                            <div class="acc-value" style="color:${parseFloat(loPct)>20?'var(--red)':'var(--accent)'}">${loPct}%</div>
                         </div>
-                        <div>
-                            <div style="font-size:13px;color:#666;margin-bottom:4px;">主要分类</div>
-                            <div style="font-size:13px;">${topCategories.map(c => `${c.category}: ${c.count}`).join('、')}</div>
+                        <div class="acc-item">
+                            <div class="acc-label">主要分类</div>
+                            <div class="acc-detail">${topCats.map(c => `${c.category}: ${c.count}`).join('、')}</div>
                         </div>
-                        <div>
-                            <div style="font-size:13px;color:#666;margin-bottom:4px;">待审核</div>
-                            <div style="font-size:20px;font-weight:600;color:#faad14">${data.low_confidence_count}</div>
+                        <div class="acc-item">
+                            <div class="acc-label">待审核</div>
+                            <div class="acc-value" style="color:var(--amber)">${data.low_confidence_count}</div>
                         </div>
-                    </div>
-                `;
+                    </div>`;
             } catch (e) {
-                document.getElementById('accuracy-stats').innerHTML = '<span style="color:#ff4d4f">加载失败</span>';
+                document.getElementById('accuracy-stats').innerHTML = '<span style="color:var(--red)">加载失败</span>';
             }
         }
 
-        // 加载活动列表
+        // ── Search ──
+        function handleSearchKey(e) { if (e.key === 'Enter') searchEvents(); }
+
+        async function searchEvents() {
+            const q = document.getElementById('search-input').value.trim();
+            if (!q) { loadEvents(); return; }
+            try {
+                const data = await api(`/dashboard/search?q=${encodeURIComponent(q)}`);
+                const tbody = document.getElementById('events-table');
+                if (!data.items.length) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-sec)">未找到匹配的活动</td></tr>';
+                } else {
+                    tbody.innerHTML = data.items.map(e => eventRow(e)).join('');
+                }
+                document.getElementById('events-pagination').innerHTML = `<span class="pg-info">搜索结果: ${data.total} 条</span>`;
+            } catch (e) {
+                document.getElementById('events-table').innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--red)">搜索失败</td></tr>';
+            }
+        }
+
+        // ── Event detail modal ──
+        async function showEventDetail(eventId) {
+            try {
+                const d = await api(`/dashboard/events/${eventId}`);
+                if (d.error) { toast(d.error, 'error'); return; }
+
+                document.getElementById('modal-title').textContent = d.title;
+
+                let html = '<div class="detail-grid">';
+
+                const fields = [
+                    ['活动类型', `${d.activity_kind}（${d.activity_kind_reason}）`],
+                    ['一级分类', d.category_1],
+                    ['二级分类', d.category_2 || '无'],
+                    ['开始时间', d.start_time || '待定'],
+                    ['结束时间', d.end_time || '待定'],
+                    ['活动地点', d.location || '待定'],
+                    ['嘉宾', d.speaker || '待定'],
+                    ['主办方', d.organizer || '待定'],
+                ];
+                fields.forEach(([l, v]) => {
+                    html += `<div class="detail-item"><div class="detail-label">${l}</div><div class="detail-value">${esc(v)}</div></div>`;
+                });
+                html += '</div>';
+
+                // Status
+                html += '<div class="detail-section"><h4>状态信息</h4><div class="detail-grid">';
+                const statusFields = [
+                    ['状态', `<span class="badge ${badgeCls(d.status)}">${statusLabel(d.status)}</span>`],
+                    ['时间状态', `<span class="badge ${timeBadgeCls(d.event_time_status)}">${timeLabel(d.event_time_status)}</span>`],
+                    ['保留决策', d.retention_decision],
+                    ['置信度', `${(d.confidence*100).toFixed(1)}%`],
+                    ['飞书记录 ID', d.feishu_record_id || '未同步'],
+                    ['用户置顶', d.user_keep ? '是' : '否'],
+                ];
+                statusFields.forEach(([l, v]) => {
+                    html += `<div class="detail-item"><div class="detail-label">${l}</div><div class="detail-value">${v}</div></div>`;
+                });
+                html += '</div></div>';
+
+                if (d.summary) html += `<div class="detail-section"><h4>摘要</h4><div>${esc(d.summary)}</div></div>`;
+
+                if (d.tags && d.tags.length) {
+                    html += `<div class="detail-section"><h4>标签</h4><div>${d.tags.map(t => `<span class="tag-pill">${esc(t)}</span>`).join('')}</div></div>`;
+                }
+
+                if (d.registration || d.registration_url) {
+                    html += '<div class="detail-section"><h4>报名信息</h4>';
+                    if (d.registration) html += `<div>${esc(d.registration)}</div>`;
+                    if (d.registration_url) html += `<div><a href="${d.registration_url}" target="_blank" style="color:var(--accent)">报名链接 →</a></div>`;
+                    if (d.registration_deadline) html += `<div>报名截止: ${esc(d.registration_deadline)}</div>`;
+                    if (d.participant_limit) html += `<div>人数限制: ${esc(d.participant_limit)}</div>`;
+                    html += '</div>';
+                }
+
+                if (d.poster_images && d.poster_images.length) {
+                    html += '<div class="detail-section"><h4>海报图片</h4><div class="poster-grid">';
+                    d.poster_images.forEach(img => { html += `<img src="/storage/images/${img}" onerror="this.style.display='none'" alt="海报">`; });
+                    html += '</div></div>';
+                }
+
+                if (d.article) {
+                    html += '<div class="detail-section"><h4>来源文章</h4>';
+                    html += `<div>公众号: ${esc(d.article.mp_name)}</div>`;
+                    html += `<div>发布时间: ${esc(d.article.publish_time)}</div>`;
+                    if (d.article.url) html += `<div><a href="${d.article.url}" target="_blank" style="color:var(--accent)">查看原文 →</a></div>`;
+                    html += '</div>';
+                }
+
+                html += `<div class="modal-actions">
+                    <button class="btn btn-primary" onclick="syncEvent('${d.event_id}');closeModal()">同步到飞书</button>
+                    <button class="btn btn-amber" onclick="keepEvent('${d.event_id}',true);closeModal()">置顶</button>
+                    <button class="btn btn-outline" onclick="closeModal()">关闭</button>
+                </div>`;
+
+                document.getElementById('modal-body').innerHTML = html;
+                document.getElementById('event-modal').style.display = 'block';
+            } catch (e) {
+                toast('加载活动详情失败: ' + e.message, 'error');
+            }
+        }
+
+        function closeModal() { document.getElementById('event-modal').style.display = 'none'; }
+
+        // ── Load events ──
         async function loadEvents(page = 1) {
             currentPage = page;
             const timeRange = document.getElementById('filter-time').value;
@@ -744,110 +1217,90 @@
                 const data = await api(`/dashboard/events?${params}`);
                 const tbody = document.getElementById('events-table');
 
-                if (data.items.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999">暂无数据</td></tr>';
+                if (!data.items.length) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-sec)">暂无数据</td></tr>';
                 } else {
-                    tbody.innerHTML = data.items.map(e => `
-                        <tr>
-                            <td><a href="#" onclick="showEventDetail('${e.event_id}');return false" style="color:inherit;text-decoration:none">${escapeHtml(e.title)}</a></td>
-                            <td>${escapeHtml(e.category_1)}</td>
-                            <td>${e.start_time || '-'}</td>
-                            <td><span class="status status-${statusClass(e.status)}">${statusLabel(e.status)}</span></td>
-                            <td><span class="time-status time-${e.event_time_status}">${timeStatusLabel(e.event_time_status)}</span></td>
-                            <td>${(e.confidence * 100).toFixed(0)}%</td>
-                            <td>
-                                ${e.feishu_record_id ? '<span class="status status-synced">已同步</span>' : `<button class="btn btn-primary btn-sm" onclick="syncEvent('${e.event_id}')">同步</button>`}
-                            </td>
-                        </tr>
-                    `).join('');
+                    tbody.innerHTML = data.items.map(e => eventRow(e)).join('');
                 }
-
-                // 分页
                 renderPagination(data.page, data.pages, data.total);
             } catch (e) {
-                document.getElementById('events-table').innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ff4d4f">加载失败</td></tr>';
+                document.getElementById('events-table').innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--red)">加载失败</td></tr>';
             }
         }
 
-        // 渲染分页
-        function renderPagination(current, total, totalCount) {
+        function eventRow(e) {
+            return `<tr>
+                <td><a href="#" onclick="showEventDetail('${e.event_id}');return false">${esc(e.title)}</a></td>
+                <td>${esc(e.category_1)}</td>
+                <td>${e.start_time || '—'}</td>
+                <td><span class="badge ${badgeCls(e.status)}">${statusLabel(e.status)}</span></td>
+                <td><span class="badge ${timeBadgeCls(e.event_time_status)}">${timeLabel(e.event_time_status)}</span></td>
+                <td>${(e.confidence*100).toFixed(0)}%</td>
+                <td>${e.feishu_record_id ? '<span class="badge badge-synced">已同步</span>' : `<button class="btn btn-primary btn-sm" onclick="syncEvent('${e.event_id}')">同步</button>`}</td>
+            </tr>`;
+        }
+
+        // ── Pagination ──
+        function renderPagination(cur, total, count) {
             const el = document.getElementById('events-pagination');
             if (total <= 1) { el.innerHTML = ''; return; }
-
-            let html = `<button ${current <= 1 ? 'disabled' : ''} onclick="loadEvents(${current - 1})">上一页</button>`;
-
-            const start = Math.max(1, current - 2);
-            const end = Math.min(total, current + 2);
-
-            if (start > 1) html += `<button onclick="loadEvents(1)">1</button>`;
-            if (start > 2) html += '<button disabled>...</button>';
-
-            for (let i = start; i <= end; i++) {
-                html += `<button class="${i === current ? 'active' : ''}" onclick="loadEvents(${i})">${i}</button>`;
-            }
-
-            if (end < total - 1) html += '<button disabled>...</button>';
-            if (end < total) html += `<button onclick="loadEvents(${total})">${total}</button>`;
-
-            html += `<button ${current >= total ? 'disabled' : ''} onclick="loadEvents(${current + 1})">下一页</button>`;
-            html += `<span style="padding:6px;color:#999">共 ${totalCount} 条</span>`;
-
-            el.innerHTML = html;
+            let h = `<button ${cur<=1?'disabled':''} onclick="loadEvents(${cur-1})">‹ 上一页</button>`;
+            const s = Math.max(1, cur-2), e = Math.min(total, cur+2);
+            if (s > 1) h += `<button onclick="loadEvents(1)">1</button>`;
+            if (s > 2) h += '<button disabled>…</button>';
+            for (let i = s; i <= e; i++) h += `<button class="${i===cur?'active':''}" onclick="loadEvents(${i})">${i}</button>`;
+            if (e < total-1) h += '<button disabled>…</button>';
+            if (e < total) h += `<button onclick="loadEvents(${total})">${total}</button>`;
+            h += `<button ${cur>=total?'disabled':''} onclick="loadEvents(${cur+1})">下一页 ›</button>`;
+            h += `<span class="pg-info">共 ${count} 条</span>`;
+            el.innerHTML = h;
         }
 
-        // 加载同步日志
+        // ── Logs ──
         async function loadLogs() {
             try {
                 const data = await api('/dashboard/sync-logs?limit=20');
                 const tbody = document.getElementById('logs-table');
-
-                if (data.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#999">暂无日志</td></tr>';
+                if (!data.length) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-sec)">暂无日志</td></tr>';
                 } else {
-                    tbody.innerHTML = data.map(log => `
-                        <tr>
-                            <td>${log.created_at ? new Date(log.created_at).toLocaleString() : '-'}</td>
-                            <td>${escapeHtml(log.target)}</td>
-                            <td>${escapeHtml(log.target_id)}</td>
-                            <td><span class="status ${log.return_code === 0 ? 'status-synced' : 'status-failed'}">${log.return_code === 0 ? '成功' : '失败'}</span></td>
-                            <td title="${escapeHtml(log.stdout_preview)}">${escapeHtml(log.stderr_preview || log.stdout_preview || '-').substring(0, 50)}</td>
-                        </tr>
-                    `).join('');
+                    tbody.innerHTML = data.map(l => `<tr>
+                        <td>${l.created_at ? new Date(l.created_at).toLocaleString() : '—'}</td>
+                        <td>${esc(l.target)}</td>
+                        <td>${esc(l.target_id)}</td>
+                        <td><span class="badge ${l.return_code===0?'badge-synced':'badge-failed'}">${l.return_code===0?'成功':'失败'}</span></td>
+                        <td title="${esc(l.stdout_preview)}">${esc(l.stderr_preview||l.stdout_preview||'—').substring(0,50)}</td>
+                    </tr>`).join('');
                 }
             } catch (e) {
-                document.getElementById('logs-table').innerHTML = '<tr><td colspan="5" style="text-align:center;color:#ff4d4f">加载失败</td></tr>';
+                document.getElementById('logs-table').innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--red)">加载失败</td></tr>';
             }
         }
 
-        // 加载同步运行记录
+        // ── Runs ──
         async function loadRuns() {
             try {
                 const data = await api('/dashboard/sync-runs?limit=20');
                 const tbody = document.getElementById('runs-table');
-
-                if (data.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999">暂无记录</td></tr>';
+                if (!data.length) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-sec)">暂无记录</td></tr>';
                 } else {
-                    tbody.innerHTML = data.map(run => `
-                        <tr>
-                            <td><code>${escapeHtml(run.run_id)}</code></td>
-                            <td>${escapeHtml(run.source)}</td>
-                            <td><span class="status status-${run.status === 'success' ? 'synced' : run.status === 'running' ? 'pending' : 'failed'}">${run.status}</span></td>
-                            <td>${run.imported_count}</td>
-                            <td>${run.started_at ? new Date(run.started_at).toLocaleString() : '-'}</td>
-                            <td>${run.completed_at ? new Date(run.completed_at).toLocaleString() : '-'}</td>
-                        </tr>
-                    `).join('');
+                    tbody.innerHTML = data.map(r => `<tr>
+                        <td><code style="font-size:12px;color:var(--text-sec)">${esc(r.run_id)}</code></td>
+                        <td>${esc(r.source)}</td>
+                        <td><span class="badge ${r.status==='success'?'badge-synced':r.status==='running'?'badge-pending':'badge-failed'}">${r.status}</span></td>
+                        <td>${r.imported_count}</td>
+                        <td>${r.started_at ? new Date(r.started_at).toLocaleString() : '—'}</td>
+                        <td>${r.completed_at ? new Date(r.completed_at).toLocaleString() : '—'}</td>
+                    </tr>`).join('');
                 }
             } catch (e) {
-                document.getElementById('runs-table').innerHTML = '<tr><td colspan="6" style="text-align:center;color:#ff4d4f">加载失败</td></tr>';
+                document.getElementById('runs-table').innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--red)">加载失败</td></tr>';
             }
         }
 
-        // 飞书多维表格链接
+        // ── Feishu link ──
         let feishuUrl = null;
-
-        // 加载飞书链接配置
         async function loadFeishuLink() {
             try {
                 const data = await api('/dashboard/feishu-link');
@@ -855,107 +1308,131 @@
                     feishuUrl = data.url;
                     document.getElementById('btn-feishu').style.display = '';
                 }
-            } catch (e) {
-                console.log('Failed to load feishu link config');
-            }
+            } catch (e) {}
         }
+        function openFeishu() { if (feishuUrl) window.open(feishuUrl, '_blank'); }
 
-        // 打开飞书多维表格
-        function openFeishu() {
-            if (feishuUrl) {
-                window.open(feishuUrl, '_blank');
-            }
-        }
-
-        // 触发同步
+        // ── Actions ──
         async function triggerSync() {
             if (!confirm('确定要触发一次自动同步吗？')) return;
-            try {
-                const result = await api('/sync/auto', { method: 'POST' });
-                alert(`同步完成！\n拉取文章: ${result.articles_fetched}\n同步事件: ${result.events_synced}\n失败: ${result.events_failed}`);
-                loadStats();
-                loadEvents();
-            } catch (e) {
-                alert('同步失败: ' + e.message);
-            }
-        }
 
-        // 发送报告
-        async function sendReport(type) {
-            if (!confirm(`确定要发送${type === 'daily' ? '日报' : '周报'}吗？`)) return;
+            const modal = document.getElementById('sync-modal');
+            const body  = document.getElementById('sync-modal-body');
+
+            // 显示加载中状态
+            body.innerHTML = `
+                <div class="sync-spinner"></div>
+                <div class="sync-phase">正在启动同步…</div>
+                <div class="sync-msg">请稍候，正在拉取文章并同步数据</div>`;
+            modal.style.display = 'block';
+
             try {
-                const result = await api(`/reports/${type}?send_to_feishu=true`, { method: 'POST' });
-                if (result.feishu_sent) {
-                    alert('报告已发送到飞书！');
-                } else {
-                    alert('报告生成成功，但发送到飞书失败: ' + (result.feishu_error || '未知错误'));
+                // 触发同步（立即返回）
+                const r = await api('/sync/auto', { method: 'POST' });
+
+                if (r.status === 'already_running') {
+                    body.innerHTML = `
+                        <div class="sync-spinner"></div>
+                        <div class="sync-phase">同步进行中</div>
+                        <div class="sync-msg">${esc(r.message)}</div>
+                        <button class="btn btn-outline" onclick="document.getElementById('sync-modal').style.display='none'" style="margin-top:12px">关闭</button>`;
+                    return;
                 }
+
+                // 轮询状态
+                pollSyncStatus(body, modal);
             } catch (e) {
-                alert('发送失败: ' + e.message);
+                body.innerHTML = `
+                    <div class="sync-done-icon err">✕</div>
+                    <div class="sync-phase">同步失败</div>
+                    <div class="sync-msg">${esc(e.message)}</div>
+                    <button class="btn btn-outline" onclick="document.getElementById('sync-modal').style.display='none'" style="margin-top:12px">关闭</button>`;
             }
         }
 
-        // 同步单个事件
+        function pollSyncStatus(body, modal) {
+            const poll = setInterval(async () => {
+                try {
+                    const s = await api('/sync/status');
+
+                    if (s.phase === 'done') {
+                        clearInterval(poll);
+                        const r = s.result || {};
+                        body.innerHTML = `
+                            <div class="sync-done-icon ok">✓</div>
+                            <div class="sync-phase">同步完成</div>
+                            <div class="sync-result">
+                                文章拉取: <strong>${r.articles_fetched ?? 0}</strong> 篇<br>
+                                事件同步: <strong>${r.events_synced ?? 0}</strong> 条<br>
+                                失败: <strong>${r.events_failed ?? 0}</strong> 条
+                            </div>
+                            <button class="btn btn-primary" onclick="document.getElementById('sync-modal').style.display='none';loadStats();loadEvents()" style="margin-top:16px">刷新数据</button>`;
+                        loadStats(); loadEvents();
+                    } else if (s.phase === 'error') {
+                        clearInterval(poll);
+                        body.innerHTML = `
+                            <div class="sync-done-icon err">✕</div>
+                            <div class="sync-phase">同步失败</div>
+                            <div class="sync-msg">${esc(s.message)}</div>
+                            <button class="btn btn-outline" onclick="document.getElementById('sync-modal').style.display='none'" style="margin-top:12px">关闭</button>`;
+                    } else {
+                        // 仍在进行中，更新状态文字
+                        const phaseMap = { fetching: '拉取文章', extracting: '抽取活动', syncing: '同步飞书' };
+                        body.innerHTML = `
+                            <div class="sync-spinner"></div>
+                            <div class="sync-phase">${phaseMap[s.phase] || '处理中'}…</div>
+                            <div class="sync-msg">${esc(s.message)}</div>`;
+                    }
+                } catch (e) {
+                    // 轮询出错，继续重试
+                }
+            }, 1500);
+        }
+
+        async function sendReport(type) {
+            if (!confirm(`确定要发送${type==='daily'?'日报':'周报'}吗？`)) return;
+            try {
+                const r = await api(`/reports/${type}?send_to_feishu=true`, { method: 'POST' });
+                toast(r.feishu_sent ? '报告已发送到飞书！' : '报告生成成功，但飞书发送失败: ' + (r.feishu_error||''), r.feishu_sent ? 'success' : 'error');
+            } catch (e) { toast('发送失败: ' + e.message, 'error'); }
+        }
+
         async function syncEvent(eventId) {
             try {
-                const result = await api(`/events/${eventId}/sync-feishu`, { method: 'POST' });
-                alert(`同步结果: ${result.status}`);
-                loadEvents(currentPage);
-                loadStats();
-            } catch (e) {
-                alert('同步失败: ' + e.message);
-            }
+                const r = await api(`/events/${eventId}/sync-feishu`, { method: 'POST' });
+                toast('同步结果: ' + r.status, 'success');
+                loadEvents(currentPage); loadStats();
+            } catch (e) { toast('同步失败: ' + e.message, 'error'); }
         }
 
-        // 置顶/取消置顶事件
         async function keepEvent(eventId, value) {
             try {
-                const result = await api(`/events/${eventId}/keep?value=${value}`, { method: 'POST' });
-                alert(`操作结果: ${result.retention_decision}`);
+                const r = await api(`/events/${eventId}/keep?value=${value}`, { method: 'POST' });
+                toast('操作结果: ' + r.retention_decision, 'success');
                 loadEvents(currentPage);
-            } catch (e) {
-                alert('操作失败: ' + e.message);
-            }
+            } catch (e) { toast('操作失败: ' + e.message, 'error'); }
         }
 
-        // 辅助函数
-        function escapeHtml(text) {
-            if (!text) return '';
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+        // ── Helpers ──
+        function esc(t) { if (!t) return ''; const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+
+        function badgeCls(s) {
+            if (s === 'synced') return 'badge-synced';
+            if (['extracted','pending_ai'].includes(s)) return 'badge-pending';
+            if (s === 'failed_sync') return 'badge-failed';
+            return 'badge-unknown';
+        }
+        function statusLabel(s) {
+            return { synced:'已同步', extracted:'已抽取', pending_ai:'待处理', failed_sync:'同步失败', failed_extract:'抽取失败', needs_image_retry:'图片重试' }[s] || s;
+        }
+        function timeBadgeCls(s) {
+            return { upcoming:'badge-upcoming', past:'badge-past', ongoing:'badge-ongoing' }[s] || 'badge-unknown';
+        }
+        function timeLabel(s) {
+            return { upcoming:'即将开始', past:'已结束', ongoing:'进行中', unknown:'未知' }[s] || s;
         }
 
-        function statusClass(status) {
-            if (status === 'synced') return 'synced';
-            if (['extracted', 'pending_ai'].includes(status)) return 'pending';
-            if (status === 'failed_sync') return 'failed';
-            return 'unknown';
-        }
-
-        function statusLabel(status) {
-            const map = {
-                'synced': '已同步',
-                'extracted': '已抽取',
-                'pending_ai': '待处理',
-                'failed_sync': '同步失败',
-                'failed_extract': '抽取失败',
-                'needs_image_retry': '图片重试',
-            };
-            return map[status] || status;
-        }
-
-        function timeStatusLabel(status) {
-            const map = {
-                'upcoming': '即将开始',
-                'past': '已结束',
-                'ongoing': '进行中',
-                'unknown': '未知',
-            };
-            return map[status] || status;
-        }
-
-        // 初始化
+        // ── Init ──
         document.addEventListener('DOMContentLoaded', () => {
             loadTodayEvents();
             loadPendingItems();
@@ -965,8 +1442,6 @@
             loadRuns();
             loadFeishuLink();
             loadAccuracy();
-
-            // 每 30 秒自动刷新统计数据
             setInterval(loadStats, 30000);
         });
     </script>

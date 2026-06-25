@@ -48,10 +48,24 @@ class OpenAIOCRProvider(OCRProvider):
     def extract(self, image_paths: list[str]) -> str:
         if not image_paths:
             return ""
+        paths = image_paths[:5]
+        if len(paths) == 1:
+            # 单张图片直接调用，不创建线程池
+            result = self._extract_single_image(paths[0])
+            return result if result.strip() else ""
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         extracted_parts: list[str] = []
-        for image_path in image_paths[:5]:
-            extracted_parts.append(self._extract_single_image(image_path))
-        return "\n".join(part for part in extracted_parts if part.strip())
+        with ThreadPoolExecutor(max_workers=min(5, len(paths))) as executor:
+            futures = {executor.submit(self._extract_single_image, p): p for p in paths}
+            for future in as_completed(futures):
+                try:
+                    part = future.result()
+                    if part.strip():
+                        extracted_parts.append(part)
+                except Exception:
+                    pass
+        return "\n".join(extracted_parts)
 
     def _extract_single_image(self, image_path: str) -> str:
         response = requests.post(

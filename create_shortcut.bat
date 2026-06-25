@@ -12,6 +12,7 @@ set "PYTHON_PATH=%SCRIPT_DIR%venv\Scripts\python.exe"
 set "PYTHONW_PATH=%SCRIPT_DIR%venv\Scripts\pythonw.exe"
 set "SCRIPT_PATH=%SCRIPT_DIR%start_service.py"
 set "GUI_PATH=%SCRIPT_DIR%gui_manager.py"
+set "ICON_PATH=%SCRIPT_DIR%app_icon.ico"
 
 :: 检查 Python 环境
 if not exist "%PYTHON_PATH%" (
@@ -33,6 +34,7 @@ echo Set oLink = oWS.CreateShortcut^(sLinkFile^)
 echo oLink.TargetPath = "%PYTHONW_PATH%"
 echo oLink.Arguments = """%GUI_PATH%"""
 echo oLink.WorkingDirectory = "%SCRIPT_DIR%"
+echo oLink.IconLocation = "%ICON_PATH%,0"
 echo oLink.Description = "GoActivity 系统托盘管理器"
 echo oLink.WindowStyle = 7
 echo oLink.Save
@@ -53,6 +55,7 @@ echo Set oLink = oWS.CreateShortcut^(sLinkFile^)
 echo oLink.TargetPath = "%PYTHON_PATH%"
 echo oLink.Arguments = """%SCRIPT_PATH%"" --start --host 0.0.0.0 --port 8000"
 echo oLink.WorkingDirectory = "%SCRIPT_DIR%"
+echo oLink.IconLocation = "%ICON_PATH%,0"
 echo oLink.Description = "GoActivity 命令行启动"
 echo oLink.WindowStyle = 1
 echo oLink.Save
@@ -93,6 +96,7 @@ echo Set oLink = oWS.CreateShortcut^(sLinkFile^)
 echo oLink.TargetPath = "%PYTHONW_PATH%"
 echo oLink.Arguments = """%GUI_PATH%"""
 echo oLink.WorkingDirectory = "%SCRIPT_DIR%"
+echo oLink.IconLocation = "%ICON_PATH%,0"
 echo oLink.Description = "GoActivity 系统托盘管理器"
 echo oLink.WindowStyle = 7
 echo oLink.Save
@@ -113,6 +117,7 @@ echo Set oLink = oWS.CreateShortcut^(sLinkFile^)
 echo oLink.TargetPath = "%PYTHON_PATH%"
 echo oLink.Arguments = """%SCRIPT_PATH%"" --start --host 0.0.0.0 --port 8000"
 echo oLink.WorkingDirectory = "%SCRIPT_DIR%"
+echo oLink.IconLocation = "%ICON_PATH%,0"
 echo oLink.Description = "启动 GoActivity 服务"
 echo oLink.WindowStyle = 1
 echo oLink.Save
@@ -133,6 +138,7 @@ echo Set oLink = oWS.CreateShortcut^(sLinkFile^)
 echo oLink.TargetPath = "%SCRIPT_DIR%install_service.bat"
 echo oLink.Arguments = "--uninstall"
 echo oLink.WorkingDirectory = "%SCRIPT_DIR%"
+echo oLink.IconLocation = "%ICON_PATH%,0"
 echo oLink.Description = "卸载 GoActivity 服务"
 echo oLink.WindowStyle = 1
 echo oLink.Save

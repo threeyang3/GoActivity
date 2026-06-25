@@ -51,18 +51,18 @@ create_shortcut.bat
 - **GoActivity 管理器** - 双击启动系统托盘应用
 
 功能特性：
-- ✅ 系统托盘显示绿色/红色图标（运行中/已停止）
-- ✅ 右键菜单管理服务（启动/停止/重启）
-- ✅ 双击查看服务状态
-- ✅ 打开管理页面和日志
-- ✅ 任务栏显示应用图标
-- ✅ 开机自动启动服务
+- ✅ 同时管理 GoActivity（端口 8000）和 WeRSS（端口 8001）
+- ✅ 双状态指示灯托盘图标（上方=GoActivity，下方=WeRSS）
+- ✅ 右键菜单独立启停/重启两个服务
+- ✅ 统一状态窗口显示两个服务健康状态
+- ✅ 独立开机自启（注册表方式，可分别控制）
+- ✅ 同步进度弹窗（触发同步后显示实时进度）
 
 使用方法：
 1. 双击桌面"GoActivity 管理器"快捷方式
-2. 服务会自动启动，托盘显示绿色图标
-3. 右键点击托盘图标可以管理服务
-4. 双击托盘图标可以查看服务状态
+2. 两个服务自动启动，托盘显示双绿色指示灯
+3. 右键点击托盘图标管理服务
+4. 双击托盘图标查看服务状态
 
 ### 方式 2：命令行启动
 
@@ -109,9 +109,11 @@ install_service.bat --uninstall
 
 服务启动后，可以通过以下地址访问：
 
-- **管理页面**: http://127.0.0.1:8000/docs
-- **健康检查**: http://127.0.0.1:8000/health
-- **API 文档**: http://127.0.0.1:8000/redoc
+- **GoActivity 管理后台**: http://127.0.0.1:8000/
+- **GoActivity API 文档**: http://127.0.0.1:8000/docs
+- **GoActivity 健康检查**: http://127.0.0.1:8000/health
+- **WeRSS 管理后台**: http://127.0.0.1:8001/
+- **WeRSS API 文档**: http://127.0.0.1:8001/api/docs
 
 ---
 
@@ -214,11 +216,11 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\GoActivity
 
 | 文件 | 说明 |
 |------|------|
-| `setup.bat` | 一键安装脚本 |
-| `start_service.py` | 服务启动脚本 |
-| `install_service.bat` | Windows 服务安装脚本 |
-| `create_shortcut.bat` | 快捷方式创建脚本 |
-| `build.spec` | PyInstaller 打包配置 |
+| `gui_manager.py` | 系统托盘管理器（管理双服务） |
+| `start_service.py` | GoActivity 服务启动脚本 |
+| `generate_icon.py` | 图标生成脚本 |
+| `create_shortcut.bat` | 快捷方式创建（含图标设置） |
+| `install_service.bat` | Windows 服务安装脚本（NSSM） |
 | `requirements.txt` | Python 依赖列表 |
 | `.env` | 环境变量配置 |
 | `logs/` | 日志目录 |

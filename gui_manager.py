@@ -18,7 +18,7 @@ os.chdir(Path(__file__).parent)
 # 检查依赖
 try:
     import pystray
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageFont
     import tkinter as tk
     from tkinter import messagebox
 except ImportError as e:
@@ -29,8 +29,31 @@ except ImportError as e:
 # 常量
 SERVICE_PORT = 8000
 SERVICE_HOST = "127.0.0.1"
+RSS_PORT = 8001
+RSS_HOST = "127.0.0.1"
+RSS_DIR = Path(__file__).parent / "we-mp-rss"
 AUTOSTART_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_REG_NAME = "GoActivity"
+AUTOSTART_REG_NAME_RSS = "WeMpRss"
+
+
+def _find_rss_python():
+    """查找 we-mp-rss 的 Python 解释器"""
+    for sub in (".venv", "venv"):
+        p = RSS_DIR / sub / "Scripts" / "python.exe"
+        if p.exists():
+            return str(p)
+    return sys.executable  # fallback: 共用当前环境
+
+
+def _lighten(hex_color, factor=0.2):
+    """将十六进制颜色变亮（factor 0~1）"""
+    hex_color = hex_color.lstrip('#')
+    r, g, b = int(hex_color[:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    r = min(255, int(r + (255 - r) * factor))
+    g = min(255, int(g + (255 - g) * factor))
+    b = min(255, int(b + (255 - b) * factor))
+    return f'#{r:02x}{g:02x}{b:02x}'
 
 
 class GoActivityTray:
@@ -39,9 +62,13 @@ class GoActivityTray:
     def __init__(self):
         self.process = None
         self.running = False
-        self.icon = None
-        self.root = None
         self.service_status = "unknown"
+        self.rss_process = None
+        self.rss_running = False
+        self.rss_service_status = "unknown"
+        self.rss_python = _find_rss_python()
+        self.icon = None
+        self._status_window = None  # 状态窗口（独立 Toplevel）
 
         # 创建日志目录
         os.makedirs('logs', exist_ok=True)
@@ -49,90 +76,79 @@ class GoActivityTray:
         # 创建图标
         self.icon_image = self.create_icon()
 
-    def create_icon(self, color='gray'):
-        """创建托盘图标"""
-        # 尝试加载自定义图标
-        icon_path = Path(__file__).parent / 'app_icon.ico'
-        if icon_path.exists():
-            try:
-                # 加载自定义图标
-                base_image = Image.open(icon_path)
-                # 调整大小为 64x64
-                base_image = base_image.resize((64, 64), Image.Resampling.LANCZOS)
+        # 创建隐藏的 tkinter 根窗口（必须在主线程）
+        self.root = tk.Tk()
+        self.root.withdraw()  # 隐藏根窗口
 
-                # 根据状态添加颜色叠加
-                if color == 'green':
-                    # 绿色 - 运行中
-                    overlay_color = (76, 175, 80, 100)
-                elif color == 'red':
-                    # 红色 - 已停止
-                    overlay_color = (244, 67, 54, 100)
-                else:
-                    # 灰色 - 未知
-                    overlay_color = (158, 158, 158, 100)
+    def create_icon(self, color='gray', rss_color='gray'):
+        """创建托盘图标 — 深绿底 + 双状态指示灯"""
+        size = 64
+        img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
 
-                # 创建叠加层
-                overlay = Image.new('RGBA', base_image.size, overlay_color)
-                # 混合图像
-                result = Image.alpha_composite(base_image.convert('RGBA'), overlay)
+        # 状态颜色映射
+        status_colors = {
+            'green': (26, 92, 58),    # #1a5c3a  运行中
+            'red':   (192, 57, 43),   # #c0392b  已停止
+            'gray':  (122, 122, 110), # #7a7a6e  未知
+        }
+        dot_color = status_colors.get(color, status_colors['gray'])
+        rss_dot_color = status_colors.get(rss_color, status_colors['gray'])
 
-                # 添加状态指示器
-                draw = ImageDraw.Draw(result)
-                indicator_radius = 8
-                indicator_x = 64 - indicator_radius - 4
-                indicator_y = 64 - indicator_radius - 4
-
-                if color == 'green':
-                    indicator_color = (76, 175, 80, 255)
-                elif color == 'red':
-                    indicator_color = (244, 67, 54, 255)
-                else:
-                    indicator_color = (158, 158, 158, 255)
-
-                # 绘制状态指示器
-                draw.ellipse(
-                    [(indicator_x - indicator_radius, indicator_y - indicator_radius),
-                     (indicator_x + indicator_radius, indicator_y + indicator_radius)],
-                    fill=indicator_color,
-                    outline=(255, 255, 255, 200),
-                    width=2
-                )
-
-                return result
-            except Exception as e:
-                print(f"Failed to load custom icon: {e}")
-
-        # 如果没有自定义图标或加载失败，使用默认图标
-        width = 64
-        height = 64
-        image = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-
-        # 绘制圆形背景
-        if color == 'green':
-            fill_color = (76, 175, 80, 255)  # 绿色 - 运行中
-        elif color == 'red':
-            fill_color = (244, 67, 54, 255)  # 红色 - 已停止
-        else:
-            fill_color = (158, 158, 158, 255)  # 灰色 - 未知
-
-        # 绘制圆角矩形
+        # 深森林绿圆角矩形背景
         draw.rounded_rectangle(
-            [(4, 4), (width - 4, height - 4)],
-            radius=12,
-            fill=fill_color
+            [(2, 2), (62, 62)],
+            radius=14,
+            fill=(26, 46, 35)  # #1a2e23
         )
 
-        # 绘制文字 "GA"
-        draw.text(
-            (width // 2, height // 2),
-            "GA",
-            fill='white',
-            anchor='mm',
-            align='center'
+        # 内部绿色圆角矩形
+        draw.rounded_rectangle(
+            [(8, 8), (56, 56)],
+            radius=10,
+            fill=(26, 92, 58)  # #1a5c3a
         )
 
-        return image
+        # GA 文字
+        try:
+            font = ImageFont.truetype("segoeui.ttf", 20)
+        except (OSError, IOError):
+            try:
+                font = ImageFont.truetype("arial.ttf", 20)
+            except (OSError, IOError):
+                font = ImageFont.load_default()
+        draw.text((32, 24), "GA", fill=(255, 255, 255), font=font, anchor="mt")
+
+        # 底部小字
+        try:
+            small = ImageFont.truetype("segoeui.ttf", 6)
+        except (OSError, IOError):
+            small = font
+        draw.text((32, 44), "Activity", fill=(255, 255, 255, 160), font=small, anchor="mt")
+
+        # 右侧双指示灯（上 = GoActivity，下 = WeRSS）
+        dot_r = 5
+        # GoActivity 指示灯
+        draw.ellipse(
+            [54 - dot_r, 14 - dot_r, 54 + dot_r, 14 + dot_r],
+            fill=dot_color, outline=(255, 255, 255, 200), width=1
+        )
+        # WeRSS 指示灯
+        draw.ellipse(
+            [54 - dot_r, 28 - dot_r, 54 + dot_r, 28 + dot_r],
+            fill=rss_dot_color, outline=(255, 255, 255, 200), width=1
+        )
+
+        # 右下角状态指示灯
+        dot_x, dot_y, dot_r = 54, 54, 7
+        draw.ellipse(
+            [dot_x - dot_r, dot_y - dot_r, dot_x + dot_r, dot_y + dot_r],
+            fill=dot_color,
+            outline=(255, 255, 255, 200),
+            width=2
+        )
+
+        return img
 
     def check_service_health(self):
         """检查服务健康状态"""
@@ -199,7 +215,7 @@ class GoActivityTray:
             threading.Thread(target=self.monitor_service, daemon=True).start()
 
         except Exception as e:
-            messagebox.showerror("错误", f"启动服务失败: {e}")
+            self.root.after(0, lambda: messagebox.showerror("错误", f"启动服务失败: {e}"))
 
     def stop_service(self):
         """停止服务"""
@@ -226,6 +242,111 @@ class GoActivityTray:
         time.sleep(1)
         self.start_service()
 
+    # ── WeRSS 服务管理 ──────────────────────────────────────────────
+
+    def _check_rss_port(self):
+        """检查 we-mp-rss 端口是否被占用"""
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex((RSS_HOST, RSS_PORT))
+        sock.close()
+        return result == 0
+
+    def check_rss_health(self):
+        """检查 we-mp-rss 健康状态"""
+        import urllib.request
+        try:
+            url = f"http://{RSS_HOST}:{RSS_PORT}/api/docs"
+            req = urllib.request.Request(url, method='GET')
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                return "ok" if resp.status == 200 else "error"
+        except Exception:
+            return "unreachable"
+
+    def start_rss_service(self):
+        """启动 we-mp-rss 服务"""
+        if self.rss_running:
+            return
+
+        if self._check_rss_port():
+            self.rss_running = True
+            self.update_icon('green')
+            self.rss_service_status = "running"
+            return
+
+        cmd = [self.rss_python, 'main.py', '-job', 'True', '-init', 'True']
+
+        try:
+            self.rss_process = subprocess.Popen(
+                cmd,
+                cwd=str(RSS_DIR),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
+            )
+            self.rss_running = True
+
+            time.sleep(3)
+
+            health = self.check_rss_health()
+            if health == "ok":
+                self.update_icon(rss_color='green')
+                self.rss_service_status = "running"
+                self.show_notification("WeRSS", "服务已启动")
+            else:
+                self.update_icon(rss_color='yellow')
+                self.rss_service_status = "starting"
+
+            threading.Thread(target=self.monitor_rss_service, daemon=True).start()
+
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("错误", f"启动 WeRSS 失败: {e}"))
+
+    def stop_rss_service(self):
+        """停止 we-mp-rss 服务"""
+        if not self.rss_running:
+            return
+
+        try:
+            if self.rss_process:
+                self.rss_process.terminate()
+                self.rss_process.wait(timeout=5)
+        except Exception:
+            if self.rss_process:
+                self.rss_process.kill()
+
+        self.rss_running = False
+        self.rss_process = None
+        self.update_icon(rss_color='red')
+        self.rss_service_status = "stopped"
+        self.show_notification("WeRSS", "服务已停止")
+
+    def restart_rss_service(self):
+        """重启 we-mp-rss 服务"""
+        self.stop_rss_service()
+        time.sleep(1)
+        self.start_rss_service()
+
+    def monitor_rss_service(self):
+        """监控 we-mp-rss 服务状态"""
+        while self.rss_running:
+            if self.rss_process and self.rss_process.poll() is not None:
+                self.rss_running = False
+                self.update_icon(rss_color='red')
+                self.rss_service_status = "stopped"
+                self.show_notification("WeRSS", "服务意外停止")
+                break
+
+            health = self.check_rss_health()
+            if health == "ok":
+                self.update_icon(rss_color='green')
+                self.rss_service_status = "running"
+            else:
+                self.update_icon(rss_color='red')
+                self.rss_service_status = "unreachable"
+
+            time.sleep(10)
+
     def monitor_service(self):
         """监控服务状态"""
         while self.running:
@@ -251,10 +372,23 @@ class GoActivityTray:
 
             time.sleep(10)
 
-    def update_icon(self, color):
-        """更新托盘图标"""
+    def update_icon(self, color=None, rss_color=None):
+        """更新托盘图标（双指示灯）"""
         if self.icon:
-            self.icon_image = self.create_icon(color)
+            ga_color = color if color is not None else self.service_status
+            rss_c = rss_color if rss_color is not None else self.rss_service_status
+            # 映射 status 字符串或颜色名到图标颜色
+            color_map = {
+                "running": "green", "stopped": "red",
+                "starting": "yellow", "degraded": "yellow",
+                "unreachable": "red", "unknown": "gray",
+                "green": "green", "red": "red",
+                "yellow": "yellow", "gray": "gray",
+            }
+            self.icon_image = self.create_icon(
+                color=color_map.get(ga_color, 'gray'),
+                rss_color=color_map.get(rss_c, 'gray'),
+            )
             self.icon.icon = self.icon_image
 
     def show_notification(self, title, message):
@@ -278,6 +412,11 @@ class GoActivityTray:
     def open_logs(self):
         """打开日志目录"""
         os.startfile('logs')
+
+    def open_rss_browser(self):
+        """打开 WeRSS 管理后台"""
+        import webbrowser
+        webbrowser.open(f'http://{RSS_HOST}:{RSS_PORT}/')
 
     def trigger_sync(self):
         """触发同步"""
@@ -323,88 +462,174 @@ class GoActivityTray:
             self.show_notification("GoActivity", f"发送失败: {e}")
 
     def show_status(self):
-        """显示服务状态窗口"""
-        if self.root is None:
-            self.root = tk.Tk()
-            self.root.title("GoActivity 服务状态")
-            self.root.geometry("450x350")
-            self.root.resizable(False, False)
+        """显示服务状态窗口（线程安全，通过 root.after 调度到主线程）"""
+        if threading.current_thread() is not threading.main_thread():
+            self.root.after(0, self.show_status)
+            return
 
-            # 状态标签
-            status_text = "运行中" if self.running else "已停止"
-            status_color = "green" if self.running else "red"
+        if self._status_window is not None and self._status_window.winfo_exists():
+            self._status_window.deiconify()
+            self._status_window.lift()
+            self._status_window.focus_force()
+            return
 
-            tk.Label(
-                self.root,
-                text=f"服务状态: {status_text}",
-                font=("Arial", 14),
-                fg=status_color
-            ).pack(pady=10)
+        # ── 设计常量 ──
+        BG       = "#faf8f0"
+        DARK     = "#1a2e23"
+        CARD_BG  = "#ffffff"
+        ACCENT   = "#1a5c3a"
+        AMBER    = "#c8956c"
+        RED      = "#c0392b"
+        TXT      = "#2c2c2c"
+        TXT_SEC  = "#7a7a6e"
+        BORDER   = "#e8e6dd"
+        FONT_SANS = "Microsoft YaHei"
+        FONT_MONO = "Consolas"
 
-            # 信息文本
-            info_text = f"""
-服务地址: http://{SERVICE_HOST}:{SERVICE_PORT}
-管理后台: http://{SERVICE_HOST}:{SERVICE_PORT}/
-API 文档: http://{SERVICE_HOST}:{SERVICE_PORT}/docs
-健康检查: http://{SERVICE_HOST}:{SERVICE_PORT}/health
+        # ── 窗口基础 ──
+        win = tk.Toplevel(self.root)
+        win.title("GoActivity + WeRSS")
+        win.geometry("460x580")
+        win.resizable(False, False)
+        win.configure(bg=BG)
+        self._status_window = win
+        win.protocol("WM_DELETE_WINDOW", self.on_status_close)
 
-进程 ID: {self.process.pid if self.process else 'N/A'}
-            """.strip()
+        # ── 深色顶栏 ──
+        header = tk.Frame(win, bg=DARK, height=90)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
 
-            tk.Label(
-                self.root,
-                text=info_text,
-                font=("Consolas", 10),
-                justify=tk.LEFT
-            ).pack(pady=10)
+        tk.Label(
+            header, text="GoActivity + WeRSS",
+            font=(FONT_SANS, 20, "bold"),
+            fg="#ffffff", bg=DARK
+        ).pack(anchor="w", padx=28, pady=(18, 0))
 
-            # 按钮框架
-            btn_frame = tk.Frame(self.root)
-            btn_frame.pack(pady=10)
+        tk.Label(
+            header, text="校园活动知识库 · 服务管理",
+            font=(FONT_SANS, 10),
+            fg=AMBER, bg=DARK
+        ).pack(anchor="w", padx=28)
 
-            tk.Button(
-                btn_frame,
-                text="打开管理后台",
-                command=self.open_browser
-            ).pack(side=tk.LEFT, padx=5)
+        # ── GoActivity 服务状态 ──
+        self._make_service_section(
+            win, "GoActivity 服务",
+            self.running, self.process, self.service_status,
+            SERVICE_HOST, SERVICE_PORT,
+            "/static/index.html", "/docs", "/health",
+            ACCENT, BG, TXT, TXT_SEC, BORDER, RED,
+            FONT_SANS, FONT_MONO, CARD_BG,
+        )
 
-            tk.Button(
-                btn_frame,
-                text="API 文档",
-                command=self.open_api_docs
-            ).pack(side=tk.LEFT, padx=5)
+        # ── WeRSS 服务状态 ──
+        self._make_service_section(
+            win, "WeRSS 服务",
+            self.rss_running, self.rss_process, self.rss_service_status,
+            RSS_HOST, RSS_PORT,
+            "/", "/api/docs", "/api/docs",
+            "#2980b9", BG, TXT, TXT_SEC, BORDER, RED,
+            FONT_SANS, FONT_MONO, CARD_BG,
+        )
 
-            tk.Button(
-                btn_frame,
-                text="查看日志",
-                command=self.open_logs
-            ).pack(side=tk.LEFT, padx=5)
+        # ── 操作按钮 ──
+        btn_frame = tk.Frame(win, bg=BG)
+        btn_frame.pack(fill=tk.X, padx=28, pady=(16, 0))
 
-            tk.Button(
-                btn_frame,
-                text="关闭",
-                command=self.root.destroy
-            ).pack(side=tk.LEFT, padx=5)
+        def make_btn(parent, text, bg_color, fg_color, cmd, side=tk.LEFT):
+            b = tk.Button(
+                parent, text=text,
+                font=(FONT_SANS, 10, "bold"),
+                bg=bg_color, fg=fg_color,
+                activebackground=bg_color, activeforeground=fg_color,
+                bd=0, relief="flat", cursor="hand2",
+                padx=14, pady=7,
+                command=cmd
+            )
+            hover = _lighten(bg_color, 0.15) if bg_color != BG else "#e0ddd4"
+            b.bind("<Enter>", lambda e: b.configure(bg=hover))
+            b.bind("<Leave>", lambda e: b.configure(bg=bg_color))
+            b.pack(side=side, padx=(0, 0 if side == tk.RIGHT else 8))
+            return b
 
-            # 关闭窗口时重置 root
-            self.root.protocol("WM_DELETE_WINDOW", self.on_status_close)
+        make_btn(btn_frame, "管理后台", ACCENT, "#ffffff",
+                 lambda: self.open_browser())
+        make_btn(btn_frame, "WeRSS 后台", "#2980b9", "#ffffff",
+                 lambda: self.open_rss_browser())
+        make_btn(btn_frame, "关闭", BG, TXT,
+                 self.on_status_close, side=tk.RIGHT)
 
-        self.root.deiconify()
-        self.root.lift()
+        win.focus_force()
+
+    def _make_service_section(self, parent, title, is_running, process, status,
+                              host, port, admin_path, docs_path, health_path,
+                              accent, BG, TXT, TXT_SEC, BORDER, RED,
+                              FONT_SANS, FONT_MONO, CARD_BG):
+        """在状态窗口中渲染一个服务的信息区块"""
+        # 分隔标题
+        sec = tk.Frame(parent, bg=BG)
+        sec.pack(fill=tk.X, padx=28, pady=(14, 0))
+        tk.Label(sec, text=title, font=(FONT_SANS, 13, "bold"),
+                 fg=TXT, bg=BG).pack(side=tk.LEFT)
+        tk.Frame(sec, bg=BORDER, height=1).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0), pady=(6, 0))
+
+        # 状态行
+        bar = tk.Frame(parent, bg=BG, height=30)
+        bar.pack(fill=tk.X, padx=28, pady=(6, 0))
+        bar.pack_propagate(False)
+
+        dot_c = accent if is_running else RED
+        dot = tk.Canvas(bar, width=10, height=10, bg=BG, highlightthickness=0)
+        dot.pack(side=tk.LEFT, pady=(0, 2))
+        dot.create_oval(1, 1, 9, 9, fill=dot_c, outline=dot_c)
+
+        status_text = "运行中" if is_running else "已停止"
+        tk.Label(bar, text=f"  {status_text}",
+                 font=(FONT_SANS, 11, "bold"), fg=TXT, bg=BG).pack(side=tk.LEFT)
+
+        pid_text = f"PID  {process.pid}" if process else "PID  —"
+        tk.Label(bar, text=pid_text, font=(FONT_MONO, 9),
+                 fg=TXT_SEC, bg=BG).pack(side=tk.RIGHT)
+
+        # 信息卡片
+        card = tk.Frame(parent, bg=CARD_BG, highlightthickness=1,
+                        highlightbackground=BORDER)
+        card.pack(fill=tk.X, padx=28, pady=(4, 0))
+
+        items = [
+            ("服务地址", f"http://{host}:{port}"),
+            ("管理后台", f"http://{host}:{port}{admin_path}"),
+            ("API 文档", f"http://{host}:{port}{docs_path}"),
+        ]
+        for i, (label, value) in enumerate(items):
+            row_bg = "#fafaf5" if i % 2 == 0 else CARD_BG
+            row = tk.Frame(card, bg=row_bg)
+            row.pack(fill=tk.X)
+            tk.Label(row, text=label, font=(FONT_SANS, 9),
+                     fg=TXT_SEC, bg=row_bg, width=8, anchor="w"
+                     ).pack(side=tk.LEFT, padx=(12, 0), pady=6)
+            tk.Label(row, text=value, font=(FONT_MONO, 9),
+                     fg=TXT, bg=row_bg, anchor="w"
+                     ).pack(side=tk.LEFT, padx=(0, 12), pady=6)
 
     def on_status_close(self):
-        """关闭状态窗口"""
-        if self.root:
-            self.root.withdraw()
+        """关闭状态窗口（销毁并清理引用，下次打开会重建）"""
+        if self._status_window is not None:
+            try:
+                self._status_window.destroy()
+            except Exception:
+                pass
+            self._status_window = None
 
     def quit_app(self, icon=None, item=None):
-        """退出应用"""
+        """退出应用（线程安全）"""
         self.stop_service()
+        self.stop_rss_service()
         if self.icon:
             self.icon.stop()
+        # 调度到主线程销毁 tkinter 并退出 mainloop
         if self.root:
-            self.root.destroy()
-        sys.exit(0)
+            self.root.after(0, self.root.quit)
 
     def is_autostart_enabled(self):
         """检查是否已启用开机自启"""
@@ -424,7 +649,6 @@ API 文档: http://{SERVICE_HOST}:{SERVICE_PORT}/docs
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_SET_VALUE)
             if enable:
-                # 获取 pythonw.exe 路径
                 pythonw = sys.executable.replace('python.exe', 'pythonw.exe')
                 script_path = str(Path(__file__).absolute())
                 value = f'"{pythonw}" "{script_path}"'
@@ -438,7 +662,39 @@ API 文档: http://{SERVICE_HOST}:{SERVICE_PORT}/docs
                 self.show_notification("GoActivity", "已禁用开机自启")
             winreg.CloseKey(key)
         except Exception as e:
-            messagebox.showerror("错误", f"设置开机自启失败: {e}")
+            self.root.after(0, lambda: messagebox.showerror("错误", f"设置开机自启失败: {e}"))
+
+    def is_rss_autostart_enabled(self):
+        """检查 WeRSS 是否已启用开机自启"""
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_READ)
+            value, _ = winreg.QueryValueEx(key, AUTOSTART_REG_NAME_RSS)
+            winreg.CloseKey(key)
+            return True
+        except WindowsError:
+            return False
+
+    def toggle_rss_autostart(self, enable=None):
+        """切换 WeRSS 开机自启"""
+        if enable is None:
+            enable = not self.is_rss_autostart_enabled()
+
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_SET_VALUE)
+            if enable:
+                main_py = str(RSS_DIR / "main.py")
+                value = f'"{self.rss_python}" "{main_py}" -job True -init True'
+                winreg.SetValueEx(key, AUTOSTART_REG_NAME_RSS, 0, winreg.REG_SZ, value)
+                self.show_notification("WeRSS", "已启用开机自启")
+            else:
+                try:
+                    winreg.DeleteValue(key, AUTOSTART_REG_NAME_RSS)
+                except WindowsError:
+                    pass
+                self.show_notification("WeRSS", "已禁用开机自启")
+            winreg.CloseKey(key)
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("错误", f"设置 WeRSS 开机自启失败: {e}"))
 
     def create_menu(self):
         """创建托盘菜单"""
@@ -450,18 +706,33 @@ API 文档: http://{SERVICE_HOST}:{SERVICE_PORT}/docs
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
-                '启动服务',
+                '启动 GoActivity',
                 lambda: threading.Thread(target=self.start_service, daemon=True).start(),
                 enabled=lambda item: not self.running
             ),
             pystray.MenuItem(
-                '停止服务',
+                '停止 GoActivity',
                 lambda: threading.Thread(target=self.stop_service, daemon=True).start(),
                 enabled=lambda item: self.running
             ),
             pystray.MenuItem(
-                '重启服务',
+                '重启 GoActivity',
                 lambda: threading.Thread(target=self.restart_service, daemon=True).start()
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                '启动 WeRSS',
+                lambda: threading.Thread(target=self.start_rss_service, daemon=True).start(),
+                enabled=lambda item: not self.rss_running
+            ),
+            pystray.MenuItem(
+                '停止 WeRSS',
+                lambda: threading.Thread(target=self.stop_rss_service, daemon=True).start(),
+                enabled=lambda item: self.rss_running
+            ),
+            pystray.MenuItem(
+                '重启 WeRSS',
+                lambda: threading.Thread(target=self.restart_rss_service, daemon=True).start()
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
@@ -496,9 +767,14 @@ API 文档: http://{SERVICE_HOST}:{SERVICE_PORT}/docs
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
-                '开机自启',
+                '开机自启 (GoActivity)',
                 lambda: self.toggle_autostart(),
                 checked=lambda item: self.is_autostart_enabled()
+            ),
+            pystray.MenuItem(
+                '开机自启 (WeRSS)',
+                lambda: self.toggle_rss_autostart(),
+                checked=lambda item: self.is_rss_autostart_enabled()
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
@@ -517,11 +793,19 @@ API 文档: http://{SERVICE_HOST}:{SERVICE_PORT}/docs
             menu=self.create_menu()
         )
 
-        # 自动启动服务
+        # 自动启动两个服务
         threading.Thread(target=self.start_service, daemon=True).start()
+        threading.Thread(target=self.start_rss_service, daemon=True).start()
 
-        # 运行托盘图标
-        self.icon.run()
+        # pystray 在后台线程运行，tkinter mainloop 在主线程运行
+        threading.Thread(target=self.icon.run, daemon=True).start()
+
+        # 主线程运行 tkinter mainloop（Windows 上 tkinter 必须在主线程）
+        self.root.mainloop()
+
+        # mainloop 退出后清理
+        if self.icon:
+            self.icon.stop()
 
 
 def main():

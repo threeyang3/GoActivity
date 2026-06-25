@@ -5,6 +5,8 @@
 
 import contextlib
 import logging
+import threading
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import Session, joinedload
@@ -29,6 +31,13 @@ class AutoSyncService:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.scheduler = BackgroundScheduler()
+        self._sync_status = {
+            "running": False,
+            "phase": "idle",       # idle | fetching | extracting | syncing | done | error
+            "message": "",
+            "result": None,
+            "started_at": None,
+        }
 
     def start(self) -> None:
         """启动定时任务调度器。"""
@@ -68,7 +77,9 @@ class AutoSyncService:
             run = run_service.start_run("auto-sync", {"trigger": "scheduled"})
 
             try:
-                # 1. 从 we-mp-rss 拉取新文章
+                # 1. 从 we-mp-rss 拉取新文章（含入库、图片下载、抽取）
+                self._sync_status["phase"] = "fetching"
+                self._sync_status["message"] = "正在从 we-mp-rss 拉取文章…"
                 article_service = ArticleService(db)
                 articles = article_service.sync_from_we_mp_rss_articles(
                     limit=50, include_no_content=False
@@ -76,12 +87,17 @@ class AutoSyncService:
                 logger.info("Fetched %d new articles", len(articles))
 
                 # 2. 重试失败的图片下载 + 重新抽取
+                self._sync_status["phase"] = "extracting"
+                self._sync_status["message"] = f"已拉取 {len(articles)} 篇文章，正在重试图片下载…"
                 retried = self._retry_image_downloads(db)
 
                 # 3. 刷新已同步事件的时间状态（过期 → past 等）
+                self._sync_status["message"] = "正在刷新事件时间状态…"
                 refreshed = self._refresh_event_statuses(db)
 
                 # 4. 同步新事件到飞书
+                self._sync_status["phase"] = "syncing"
+                self._sync_status["message"] = "正在同步到飞书…"
                 feishu_adapter = FeishuAdapter(db)
                 events = (
                     db.query(Event)
@@ -95,7 +111,9 @@ class AutoSyncService:
 
                 synced = 0
                 failed = 0
-                for event in events:
+                total = len(events)
+                for i, event in enumerate(events):
+                    self._sync_status["message"] = f"正在同步飞书… ({i+1}/{total})"
                     try:
                         result = feishu_adapter.sync_event(event)
                         if result.get("status") == "synced":
@@ -216,13 +234,45 @@ class AutoSyncService:
         return refreshed
 
     def run_now(self) -> dict:
-        """立即执行一次同步（供手动触发使用）。"""
-        logger.info("Running manual sync...")
-        result = self._execute_sync()
-        logger.info(
-            "Manual sync complete: %d articles fetched, %d events synced, %d failed",
-            result["articles_fetched"],
-            result["events_synced"],
-            result["events_failed"],
-        )
-        return result
+        """立即执行一次同步（供手动触发使用）。非阻塞，后台线程运行。"""
+        if self._sync_status["running"]:
+            return {"status": "already_running", "message": "同步正在进行中"}
+
+        def _run():
+            self._sync_status.update({
+                "running": True,
+                "phase": "fetching",
+                "message": "正在拉取文章…",
+                "result": None,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            })
+            try:
+                logger.info("Running manual sync...")
+                result = self._execute_sync()
+                self._sync_status.update({
+                    "running": False,
+                    "phase": "done",
+                    "message": "同步完成",
+                    "result": result,
+                })
+                logger.info(
+                    "Manual sync complete: %d articles fetched, %d events synced, %d failed",
+                    result["articles_fetched"],
+                    result["events_synced"],
+                    result["events_failed"],
+                )
+            except Exception as e:
+                logger.exception("Manual sync failed")
+                self._sync_status.update({
+                    "running": False,
+                    "phase": "error",
+                    "message": f"同步失败: {e}",
+                    "result": None,
+                })
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {"status": "started", "message": "同步已启动"}
+
+    def get_sync_status(self) -> dict:
+        """返回当前同步状态。"""
+        return dict(self._sync_status)

@@ -17,15 +17,25 @@ powershell -ExecutionPolicy Bypass -File .\scripts\locate-conda.ps1
 
 If that script cannot find `conda.exe`, the `C:\Users\threeyang\.anaconda` directory is likely only Anaconda configuration/keyring data, not a full Miniconda/Anaconda installation.
 
+## Tray Manager (Recommended)
+
+The system tray application (`gui_manager.py`) manages both services:
+
+```powershell
+python gui_manager.py
+```
+
+This starts GoActivity (port 8000) and we-mp-rss (port 8001) automatically, with a dual-status tray icon and right-click menu for independent control.
+
 ## we-mp-rss without Docker
 
-Use:
+Setup:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-we-mp-rss.ps1
 ```
 
-Then start:
+Start independently (if not using tray manager):
 
 ```powershell
 cd .\we-mp-rss

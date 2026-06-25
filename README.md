@@ -39,6 +39,17 @@ Miniconda 路径（当前机器）：`D:\miniconda3`
 
 ### 一键启动（手动）
 
+推荐使用系统托盘管理器（`gui_manager.py`），可同时管理两个服务：
+
+```powershell
+cd E:\cctry\GoActivity
+python gui_manager.py
+```
+
+托盘程序会自动启动 GoActivity（端口 8000）和 we-mp-rss（端口 8001），并在托盘图标上显示双状态指示灯。
+
+也可以分别手动启动：
+
 ```powershell
 # 终端 1：启动 we-mp-rss
 cd E:\cctry\GoActivity\we-mp-rss
@@ -55,25 +66,17 @@ D:\miniconda3\envs\goactivity\python.exe -m uvicorn app.main:app --host 127.0.0.
 GET http://localhost:8000/health
 ```
 
-### 开机自启（Windows 计划任务）
+### 开机自启
 
-用管理员 PowerShell 运行 `scripts/install-autostart.ps1`，会创建两个计划任务：
+通过托盘程序右键菜单设置（推荐）：
+
+- **开机自启 (GoActivity)** — 注册表写入，登录时自动启动托盘→GoActivity
+- **开机自启 (WeRSS)** — 独立注册表键，登录时自动启动 we-mp-rss
+
+也可以通过计划任务方式（`scripts/install-autostart.ps1`）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-autostart.ps1
-```
-
-创建的任务：
-- `GoActivity` — 登录时启动 GoActivity（端口 8000）
-- `WeMpRss` — 登录时启动 we-mp-rss（端口 8001）
-
-管理命令：
-
-```powershell
-schtasks /Query /TN "GoActivity"    # 查看状态
-schtasks /Run /TN "GoActivity"      # 手动启动
-schtasks /End /TN "GoActivity"      # 停止
-schtasks /Delete /TN "GoActivity"   # 删除
 ```
 
 ### 推送模式（可选）
@@ -154,7 +157,9 @@ http://localhost:8001
 - 增强健康检查（DB、lark-cli、Vision API、we-mp-rss、上次同步状态）。
 - 飞书机器人：自然语言查询、速率限制、对话历史。
 - CI pipeline（GitHub Actions：pytest + import check）。
-- Web 管理后台：统计仪表板、事件列表、同步日志、快捷操作、活动详情、搜索、时间筛选、待办事项。
+- Web 管理后台：统计仪表板、事件列表、同步日志、快捷操作、活动详情、搜索、时间筛选、待办事项（editorial campus bulletin 设计风格）。
+- 系统托盘管理器：同时管理 GoActivity + WeRSS 双服务，独立启停/重启，独立开机自启（注册表），双状态指示灯托盘图标，统一状态窗口。
+- 同步进度 UI：触发同步后弹出进度窗口，轮询显示拉取/抽取/同步阶段，完成后展示结果统计。
 - SQLite WAL 模式：提升并发读写性能。
 - 数据库索引：`status`、`start_time`、`feishu_record_id` 字段索引。
 - 公众号添加指南：`docs/adding-accounts.md`。
@@ -168,7 +173,8 @@ http://localhost:8001
 - `POST /webhooks/we-mp-rss`
 - `POST /sync/we-mp-rss/articles`
 - `POST /sync/we-mp-rss/rss/{feed_id}`
-- `POST /sync/auto` — 手动触发一次完整同步（拉取+抽取+飞书）
+- `POST /sync/auto` — 手动触发一次完整同步（非阻塞，后台执行）
+- `GET /sync/status` — 查询当前同步状态（配合前端轮询进度）
 - `GET /sync/logs`
 - `GET /sync/summary`
 - `GET /sync/runs`

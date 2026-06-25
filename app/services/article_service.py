@@ -1,5 +1,6 @@
 import json
 import logging
+import contextlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -37,11 +38,13 @@ class ArticleService:
         offset: int = 0,
         include_no_content: bool = False,
     ) -> list[dict]:
+        from app.db import SessionLocal
+
         client = WeMpRssClient()
         page_size = max(1, min(limit, 50))
 
         # 分页拉取，收集需要入库的 payload
-        # 按 article_id 去重：用 exists 查询替代全量加载
+        # 逐条检查 DB 去重（分页循环内必须逐条检查，否则会提前终止）
         seen_ids: set[str] = set()
         candidates: list[dict] = []
         page_offset = offset
@@ -75,10 +78,32 @@ class ArticleService:
         # 并行获取文章详情（没有 content 的需要补全）
         self._enrich_payloads_parallel(client, candidates)
 
-        # 逐篇入库
-        results: list[dict] = []
-        for payload in candidates:
-            results.append(self.ingest_we_mp_rss_payload(payload))
+        # 入库：≤4 篇串行，>4 篇并行（SQLite 并发写入限制）
+        if len(candidates) <= 4:
+            results = [self.ingest_we_mp_rss_payload(p) for p in candidates]
+        else:
+            def _ingest_one(payload: dict) -> dict:
+                import time as _time
+                for attempt in range(3):
+                    try:
+                        with contextlib.closing(SessionLocal()) as worker_db:
+                            svc = ArticleService(worker_db)
+                            return svc.ingest_we_mp_rss_payload(payload)
+                    except Exception as e:
+                        if "database is locked" in str(e) and attempt < 2:
+                            _time.sleep(0.5 * (attempt + 1))
+                            continue
+                        raise
+
+            max_workers = min(2, len(candidates))
+            results = []
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_ingest_one, p): p for p in candidates}
+                for future in as_completed(futures):
+                    try:
+                        results.append(future.result())
+                    except Exception as e:
+                        logger.error("Failed to ingest article: %s", e)
         return results
 
     def _enrich_payloads_parallel(

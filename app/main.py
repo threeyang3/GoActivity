@@ -125,15 +125,17 @@ def bot_status() -> dict[str, Any]:
 
 @app.post("/sync/auto")
 def trigger_auto_sync() -> dict[str, Any]:
-    """手动触发一次自动同步（拉取新文章 + 同步到飞书）"""
+    """手动触发一次自动同步（非阻塞，后台执行）"""
     service: AutoSyncService = app.state.auto_sync
     result = service.run_now()
-    return {
-        "status": "ok",
-        "articles_fetched": result["articles_fetched"],
-        "events_synced": result["events_synced"],
-        "events_failed": result["events_failed"],
-    }
+    return result
+
+
+@app.get("/sync/status")
+def sync_status() -> dict[str, Any]:
+    """查询当前同步状态"""
+    service: AutoSyncService = app.state.auto_sync
+    return service.get_sync_status()
 
 
 # ---------------------------------------------------------------------------

@@ -121,7 +121,9 @@ class EventPolicyService:
         self.db = db
 
     def apply(self, event: Event) -> EventPolicyDecision:
-        article = self.db.query(Article).filter(Article.article_id == event.article_id).one()
+        article = self.db.query(Article).filter(Article.article_id == event.article_id).one_or_none()
+        if article is None:
+            return EventPolicyDecision("unknown", "article not found", EventTimeStatus.UNKNOWN, RetentionDecision.KEEP, False)
         article_type, reason = classify_article_type(article.title or event.title, article.processed_markdown or article.raw_markdown)
         time_status = event_time_status(event.start_time, event.end_time)
         gate = evaluate_article_gate(article.title or event.title, article.processed_markdown or article.raw_markdown, article.publish_time)

@@ -27,7 +27,10 @@ class EventExtractor:
         self.db = db
 
     def extract(self, event: Event) -> dict[str, Any]:
-        article = self.db.query(Article).filter(Article.article_id == event.article_id).one()
+        article = self.db.query(Article).filter(Article.article_id == event.article_id).one_or_none()
+        if article is None:
+            logger.warning("Article %s not found for event %s, skipping extraction", event.article_id, event.event_id)
+            return {}
         images = self.db.query(Image).filter(Image.article_id == event.article_id).all()
         image_paths = [image.local_path for image in select_key_images(images) if image.local_path]
         ocr_text = ""

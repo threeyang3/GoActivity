@@ -37,8 +37,13 @@ class EventExtractor:
         vision: dict[str, Any] = {}
         extraction_ok = False
         try:
-            ocr_text = OCRExtractor().extract(image_paths)
-            vision = VisionExtractor().analyze(article.title, article.processed_markdown, image_paths, ocr_text)
+            # 无图片时跳过 OCR，节省 API 调用
+            if image_paths:
+                ocr_text = OCRExtractor().extract(image_paths)
+            # 无图片且文章较短时，跳过 Vision API（纯文字文章抽取价值低）
+            content_len = len(article.processed_markdown or article.raw_markdown or "")
+            if image_paths or content_len > 500:
+                vision = VisionExtractor().analyze(article.title, article.processed_markdown, image_paths, ocr_text)
             self._apply_result(event, vision, ocr_text)
             ExtractionValidator().validate(event)
             extraction_ok = True

@@ -32,19 +32,19 @@ class ArticleService:
         data = normalize_payload(payload)
         return self._ingest_normalized_payload(data, payload)
 
-    def sync_from_we_mp_rss_articles(
+    def fetch_candidates(
         self,
         limit: int = 20,
         offset: int = 0,
         include_no_content: bool = False,
     ) -> list[dict]:
-        from app.db import SessionLocal
+        """从 we-mp-rss 拉取新文章候选列表（去重 + 补全 content）。
 
+        此方法只做 HTTP 拉取和 DB 去重检查，不做入库，速度快。
+        """
         client = WeMpRssClient()
         page_size = max(1, min(limit, 50))
 
-        # 分页拉取，收集需要入库的 payload
-        # 逐条检查 DB 去重（分页循环内必须逐条检查，否则会提前终止）
         seen_ids: set[str] = set()
         candidates: list[dict] = []
         page_offset = offset
@@ -72,39 +72,69 @@ class ArticleService:
             if len(page) < page_size:
                 break
 
+        if candidates:
+            self._enrich_payloads_parallel(client, candidates)
+
+        return candidates
+
+    def ingest_candidates_parallel(
+        self, candidates: list[dict], on_progress=None
+    ) -> list[dict]:
+        """并行入库候选文章。on_progress(completed, total) 可选回调。"""
+        from app.db import SessionLocal
+
         if not candidates:
             return []
 
-        # 并行获取文章详情（没有 content 的需要补全）
-        self._enrich_payloads_parallel(client, candidates)
+        def _ingest_one(payload: dict) -> dict:
+            import time as _time
+            for attempt in range(3):
+                try:
+                    with contextlib.closing(SessionLocal()) as worker_db:
+                        svc = ArticleService(worker_db)
+                        return svc.ingest_we_mp_rss_payload(payload)
+                except Exception as e:
+                    if "database is locked" in str(e) and attempt < 2:
+                        _time.sleep(0.5 * (attempt + 1))
+                        continue
+                    raise
 
-        # 入库：≤4 篇串行，>4 篇并行（SQLite 并发写入限制）
-        if len(candidates) <= 4:
-            results = [self.ingest_we_mp_rss_payload(p) for p in candidates]
-        else:
-            def _ingest_one(payload: dict) -> dict:
-                import time as _time
-                for attempt in range(3):
-                    try:
-                        with contextlib.closing(SessionLocal()) as worker_db:
-                            svc = ArticleService(worker_db)
-                            return svc.ingest_we_mp_rss_payload(payload)
-                    except Exception as e:
-                        if "database is locked" in str(e) and attempt < 2:
-                            _time.sleep(0.5 * (attempt + 1))
-                            continue
-                        raise
-
-            max_workers = min(2, len(candidates))
+        total = len(candidates)
+        if total <= 4:
             results = []
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(_ingest_one, p): p for p in candidates}
-                for future in as_completed(futures):
-                    try:
-                        results.append(future.result())
-                    except Exception as e:
-                        logger.error("Failed to ingest article: %s", e)
+            for i, p in enumerate(candidates):
+                try:
+                    results.append(self.ingest_we_mp_rss_payload(p))
+                except Exception as e:
+                    logger.error("Failed to ingest article: %s", e)
+                if on_progress:
+                    on_progress(i + 1, total)
+            return results
+
+        max_workers = min(4, total)
+        results = []
+        completed = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_ingest_one, p): p for p in candidates}
+            for future in as_completed(futures):
+                try:
+                    results.append(future.result())
+                except Exception as e:
+                    logger.error("Failed to ingest article: %s", e)
+                completed += 1
+                if on_progress:
+                    on_progress(completed, total)
         return results
+
+    def sync_from_we_mp_rss_articles(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        include_no_content: bool = False,
+    ) -> list[dict]:
+        """兼容旧接口：拉取 + 入库一步完成。"""
+        candidates = self.fetch_candidates(limit, offset, include_no_content)
+        return self.ingest_candidates_parallel(candidates)
 
     def _enrich_payloads_parallel(
         self, client: WeMpRssClient, payloads: list[dict]

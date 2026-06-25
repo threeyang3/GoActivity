@@ -77,14 +77,25 @@ class AutoSyncService:
             run = run_service.start_run("auto-sync", {"trigger": "scheduled"})
 
             try:
-                # 1. 从 we-mp-rss 拉取新文章（含入库、图片下载、抽取）
+                # 1. 从 we-mp-rss 拉取新文章候选（快速，仅 HTTP + DB 去重）
                 self._sync_status["phase"] = "fetching"
                 self._sync_status["message"] = "正在从 we-mp-rss 拉取文章…"
                 article_service = ArticleService(db)
-                articles = article_service.sync_from_we_mp_rss_articles(
+                candidates = article_service.fetch_candidates(
                     limit=50, include_no_content=False
                 )
-                logger.info("Fetched %d new articles", len(articles))
+                logger.info("Fetched %d new article candidates", len(candidates))
+
+                # 2. 并行入库（图片下载 + Vision 抽取，耗时操作）
+                self._sync_status["phase"] = "extracting"
+                self._sync_status["message"] = f"已拉取 {len(candidates)} 篇文章，正在并行处理…"
+
+                def _on_ingest_progress(completed: int, total: int):
+                    self._sync_status["message"] = f"正在处理文章… ({completed}/{total})"
+
+                articles = article_service.ingest_candidates_parallel(
+                    candidates, on_progress=_on_ingest_progress
+                )
 
                 # 2. 重试失败的图片下载 + 重新抽取
                 self._sync_status["phase"] = "extracting"

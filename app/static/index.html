@@ -174,7 +174,7 @@
         /* ── Stat cards ── */
         .stats-row {
             display: grid;
-            grid-template-columns: repeat(5, 1fr);
+            grid-template-columns: repeat(6, 1fr);
             gap: 16px;
             margin-bottom: 28px;
         }
@@ -448,6 +448,7 @@
         .badge-pending { background: var(--amber-lt);  color: #8a6530; }
         .badge-failed  { background: var(--red-lt);    color: var(--red); }
         .badge-unknown { background: #f0f0ea;          color: var(--text-sec); }
+        .badge-archived { background: #e8e6dd;          color: #666; }
 
         .badge-upcoming { background: var(--blue-lt);   color: var(--blue); }
         .badge-past     { background: #f0f0ea;          color: var(--text-sec); }
@@ -686,6 +687,7 @@
         /* ── Responsive ── */
         @media (max-width: 1024px) {
             .stats-row { grid-template-columns: repeat(3, 1fr); }
+            .pipeline-bar { gap: 12px; }
             .pending-grid { grid-template-columns: repeat(2, 1fr); }
             .accuracy-grid { grid-template-columns: repeat(2, 1fr); }
         }
@@ -700,6 +702,69 @@
             .detail-grid { grid-template-columns: 1fr; }
             .modal-box { margin: 16px; }
         }
+
+        /* ── Pipeline status ── */
+        .pipeline-bar {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+            font-size: 13px;
+            color: var(--text);
+        }
+        .pipeline-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+        .pipeline-item .pi-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .pipeline-item .pi-dot.green { background: #27ae60; }
+        .pipeline-item .pi-dot.red   { background: var(--red); }
+        .pipeline-item .pi-dot.gray  { background: #b0b0a0; }
+        .pipeline-item .pi-dot.amber { background: var(--amber); }
+        .pipeline-sep {
+            width: 1px; height: 16px;
+            background: var(--border);
+        }
+        .pipeline-item.warn { color: var(--red); font-weight: 600; }
+
+        /* ── Account management ── */
+        .account-search-bar {
+            display: flex; gap: 10px; align-items: center; margin-bottom: 16px;
+        }
+        .account-search-results {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: var(--radius); margin-bottom: 16px; max-height: 320px;
+            overflow-y: auto; box-shadow: var(--shadow);
+        }
+        .account-search-item {
+            display: flex; align-items: center; gap: 12px;
+            padding: 10px 16px; border-bottom: 1px solid var(--border);
+            transition: background 0.15s;
+        }
+        .account-search-item:last-child { border-bottom: none; }
+        .account-search-item:hover { background: var(--bg-hover); }
+        .account-search-item img {
+            width: 36px; height: 36px; border-radius: 50%; object-fit: cover;
+            border: 1px solid var(--border);
+        }
+        .account-search-item .acc-info { flex: 1; min-width: 0; }
+        .account-search-item .acc-name { font-weight: 600; font-size: 14px; }
+        .account-search-item .acc-intro {
+            font-size: 12px; color: var(--text-sec); white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis; max-width: 400px;
+        }
+        .account-avatar {
+            width: 32px; height: 32px; border-radius: 50%; object-fit: cover;
+            border: 1px solid var(--border);
+        }
+        .account-status-on { color: var(--accent); font-weight: 600; }
+        .account-status-off { color: var(--text-sec); }
     </style>
 </head>
 <body>
@@ -715,7 +780,7 @@
             </div>
             <div class="masthead-actions">
                 <button class="btn btn-feishu" id="btn-feishu" onclick="openFeishu()" style="display:none">📋 飞书表格</button>
-                <button class="btn btn-ghost" onclick="triggerSync()">🔄 触发同步</button>
+                <button class="btn btn-ghost" onclick="triggerSync()" title="从已订阅公众号拉取最新文章，用AI抽取活动信息，同步到飞书表格">🔄 拉取文章 → 同步飞书</button>
                 <button class="btn btn-ghost" onclick="sendReport('daily')">📊 日报</button>
                 <button class="btn btn-ghost" onclick="sendReport('weekly')">📈 周报</button>
                 <button class="btn btn-ghost" onclick="location.reload()">↻</button>
@@ -724,6 +789,16 @@
     </header>
 
     <div class="container">
+        <!-- ══ 数据管道状态 ══ -->
+        <div class="section-divider"><h2>数据管道状态</h2></div>
+        <div class="card">
+            <div class="card-body">
+                <div id="pipeline-status" class="pipeline-bar">
+                    <span class="pipeline-item"><span class="spinner"></span> 检查中…</span>
+                </div>
+            </div>
+        </div>
+
         <!-- ══ 今日纵览 ══ -->
         <div class="section-divider"><h2>今日纵览</h2></div>
         <div class="card">
@@ -762,6 +837,10 @@
             <div class="stat-card red">
                 <div class="stat-label">同步失败</div>
                 <div class="stat-value" id="stat-failed">—</div>
+            </div>
+            <div class="stat-card" style="border-left-color:#999">
+                <div class="stat-label">已归档</div>
+                <div class="stat-value" id="stat-archived">—</div>
             </div>
         </div>
 
@@ -813,6 +892,7 @@
                         <option value="extracted">已抽取</option>
                         <option value="pending_ai">待处理</option>
                         <option value="failed_sync">同步失败</option>
+                        <option value="archived">已归档</option>
                     </select>
                     <select class="filter-select" id="filter-category" onchange="loadEvents()">
                         <option value="">全部分类</option>
@@ -894,6 +974,39 @@
                 </div>
             </div>
         </div>
+
+        <!-- ══ 公众号管理 ══ -->
+        <div class="section-divider">
+            <h2>公众号管理</h2>
+            <button class="btn btn-outline btn-sm" onclick="loadAccounts()" style="margin-left:auto">刷新列表</button>
+        </div>
+        <div class="card">
+            <div class="card-body">
+                <!-- 搜索添加 -->
+                <div class="account-search-bar">
+                    <input type="text" id="account-search-input" placeholder="搜索公众号名称…" class="search-input" style="flex:1;max-width:320px">
+                    <button class="btn btn-primary btn-sm" onclick="searchAccounts()">搜索</button>
+                </div>
+                <div id="account-search-results" class="account-search-results" style="display:none"></div>
+                <!-- 已订阅列表 -->
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width:48px">头像</th>
+                                <th>公众号名称</th>
+                                <th>简介</th>
+                                <th style="width:70px">状态</th>
+                                <th style="width:160px">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="accounts-table">
+                            <tr><td colspan="5" class="loading"><span class="spinner"></span>加载中…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Modal -->
@@ -946,6 +1059,92 @@
             }
         }
 
+        // ── Load pipeline status ──
+        async function loadPipelineStatus() {
+            try {
+                const d = await api('/dashboard/pipeline-status');
+                const el = document.getElementById('pipeline-status');
+                let html = '';
+
+                // we-mp-rss 状态
+                if (d.rss_online) {
+                    html += `<span class="pipeline-item"><span class="pi-dot green"></span> we-mp-rss 在线</span>`;
+                } else {
+                    html += `<span class="pipeline-item warn"><span class="pi-dot red"></span> we-mp-rss 离线</span>`;
+                }
+                html += '<span class="pipeline-sep"></span>';
+
+                // 最新文章
+                if (d.latest_article_ingested_at) {
+                    const ago = timeAgo(d.latest_article_ingested_at);
+                    const mpInfo = d.latest_article_mp_name ? ` · ${esc(d.latest_article_mp_name)}` : '';
+                    html += `<span class="pipeline-item">📥 最新入库: <strong>${ago}</strong>${mpInfo}</span>`;
+                } else {
+                    html += `<span class="pipeline-item"><span class="pi-dot gray"></span> 暂无文章</span>`;
+                }
+                html += '<span class="pipeline-sep"></span>';
+
+                // 最后同步飞书
+                if (d.last_sync) {
+                    const s = d.last_sync;
+                    const ago = s.completed_at ? timeAgo(s.completed_at) : timeAgo(s.started_at);
+                    const dotCls = s.status === 'success' ? 'green' : 'red';
+                    const statusText = s.status === 'success' ? '成功' : '失败';
+                    html += `<span class="pipeline-item"><span class="pi-dot ${dotCls}"></span> 最后同步飞书: <strong>${ago}</strong>（${statusText}，${s.imported_count}篇）</span>`;
+                } else {
+                    html += `<span class="pipeline-item"><span class="pi-dot gray"></span> 暂无同步记录</span>`;
+                }
+                html += '<span class="pipeline-sep"></span>';
+
+                // 自动同步
+                if (d.auto_sync_cron) {
+                    html += `<span class="pipeline-item">⏰ 自动同步: ${esc(d.auto_sync_cron)}</span>`;
+                } else {
+                    html += `<span class="pipeline-item"><span class="pi-dot gray"></span> 自动同步已关闭</span>`;
+                }
+                html += '<span class="pipeline-sep"></span>';
+
+                // 待同步
+                if (d.pending_sync_count > 0) {
+                    html += `<span class="pipeline-item warn">📋 ${d.pending_sync_count} 条待同步到飞书</span>`;
+                } else {
+                    html += `<span class="pipeline-item"><span class="pi-dot green"></span> 全部已同步</span>`;
+                }
+                html += '<span class="pipeline-sep"></span>';
+
+                // 归档统计
+                if (d.archived_count > 0) {
+                    html += `<span class="pipeline-item">🗂️ ${d.archived_count} 条已归档</span>`;
+                }
+                if (d.auto_archive_expired_days > 0) {
+                    html += `<span class="pipeline-item">⚙️ 过期${d.auto_archive_expired_days}天自动归档</span>`;
+                } else {
+                    html += `<span class="pipeline-item">⚙️ 自动归档已关闭</span>`;
+                }
+
+                el.innerHTML = html;
+            } catch (e) {
+                document.getElementById('pipeline-status').innerHTML =
+                    '<span class="pipeline-item warn"><span class="pi-dot red"></span> 无法获取管道状态</span>';
+            }
+        }
+
+        function timeAgo(isoStr) {
+            if (!isoStr) return '未知';
+            const now = Date.now();
+            const then = new Date(isoStr).getTime();
+            if (isNaN(then)) return isoStr;
+            const diffMs = now - then;
+            const diffMin = Math.floor(diffMs / 60000);
+            if (diffMin < 1) return '刚刚';
+            if (diffMin < 60) return diffMin + ' 分钟前';
+            const diffHr = Math.floor(diffMin / 60);
+            if (diffHr < 24) return diffHr + ' 小时前';
+            const diffDay = Math.floor(diffHr / 24);
+            if (diffDay < 30) return diffDay + ' 天前';
+            return Math.floor(diffDay / 30) + ' 个月前';
+        }
+
         // ── Load stats ──
         async function loadStats() {
             try {
@@ -955,6 +1154,7 @@
                 document.getElementById('stat-synced').textContent = data.events.synced;
                 document.getElementById('stat-pending').textContent = data.events.pending;
                 document.getElementById('stat-failed').textContent = data.events.failed;
+                document.getElementById('stat-archived').textContent = data.events.archived;
 
                 const syncEl = document.getElementById('latest-sync');
                 if (data.latest_sync) {
@@ -1151,6 +1351,8 @@
                     ['置信度', `${(d.confidence*100).toFixed(1)}%`],
                     ['飞书记录 ID', d.feishu_record_id || '未同步'],
                     ['用户置顶', d.user_keep ? '是' : '否'],
+                    ['用户参与', d.user_participate ? '是' : '否'],
+                    ['归档时间', d.archived_at ? new Date(d.archived_at).toLocaleString() : '未归档'],
                 ];
                 statusFields.forEach(([l, v]) => {
                     html += `<div class="detail-item"><div class="detail-label">${l}</div><div class="detail-value">${v}</div></div>`;
@@ -1186,11 +1388,16 @@
                     html += '</div>';
                 }
 
-                html += `<div class="modal-actions">
-                    <button class="btn btn-primary" onclick="syncEvent('${d.event_id}');closeModal()">同步到飞书</button>
-                    <button class="btn btn-amber" onclick="keepEvent('${d.event_id}',true);closeModal()">置顶</button>
-                    <button class="btn btn-outline" onclick="closeModal()">关闭</button>
-                </div>`;
+                html += `<div class="modal-actions">`;
+                if (d.status === 'archived') {
+                    html += `<button class="btn btn-amber" onclick="unarchiveEvent('${d.event_id}');closeModal()">取消归档</button>`;
+                } else {
+                    html += `<button class="btn btn-primary" onclick="syncEvent('${d.event_id}');closeModal()">同步到飞书</button>`;
+                    html += `<button class="btn btn-amber" onclick="keepEvent('${d.event_id}',true);closeModal()">置顶</button>`;
+                    html += `<button class="btn btn-feishu" onclick="toggleParticipate('${d.event_id}',${!d.user_participate});closeModal()">${d.user_participate ? '取消参与' : '我参与了'}</button>`;
+                    html += `<button class="btn btn-danger" onclick="archiveEvent('${d.event_id}');closeModal()">归档</button>`;
+                }
+                html += `<button class="btn btn-outline" onclick="closeModal()">关闭</button></div>`;
 
                 document.getElementById('modal-body').innerHTML = html;
                 document.getElementById('event-modal').style.display = 'block';
@@ -1229,14 +1436,28 @@
         }
 
         function eventRow(e) {
+            const markers = [];
+            if (e.user_keep) markers.push('📌');
+            if (e.user_participate) markers.push('🙋');
+            const markerHtml = markers.length ? `<span style="margin-left:4px">${markers.join('')}</span>` : '';
+
+            let actionHtml;
+            if (e.status === 'archived') {
+                actionHtml = `<button class="btn btn-outline btn-sm" onclick="unarchiveEvent('${e.event_id}')">取消归档</button>`;
+            } else if (e.feishu_record_id) {
+                actionHtml = `<span class="badge badge-synced">已同步</span> <a href="#" onclick="archiveEvent('${e.event_id}');return false" style="font-size:11px;color:var(--text-sec);margin-left:4px">归档</a>`;
+            } else {
+                actionHtml = `<button class="btn btn-primary btn-sm" onclick="syncEvent('${e.event_id}')">同步到飞书</button>`;
+            }
+
             return `<tr>
-                <td><a href="#" onclick="showEventDetail('${e.event_id}');return false">${esc(e.title)}</a></td>
+                <td><a href="#" onclick="showEventDetail('${e.event_id}');return false">${esc(e.title)}</a>${markerHtml}</td>
                 <td>${esc(e.category_1)}</td>
                 <td>${e.start_time || '—'}</td>
                 <td><span class="badge ${badgeCls(e.status)}">${statusLabel(e.status)}</span></td>
                 <td><span class="badge ${timeBadgeCls(e.event_time_status)}">${timeLabel(e.event_time_status)}</span></td>
                 <td>${(e.confidence*100).toFixed(0)}%</td>
-                <td>${e.feishu_record_id ? '<span class="badge badge-synced">已同步</span>' : `<button class="btn btn-primary btn-sm" onclick="syncEvent('${e.event_id}')">同步</button>`}</td>
+                <td>${actionHtml}</td>
             </tr>`;
         }
 
@@ -1323,7 +1544,7 @@
             body.innerHTML = `
                 <div class="sync-spinner"></div>
                 <div class="sync-phase">正在启动同步…</div>
-                <div class="sync-msg">请稍候，正在拉取文章并同步数据</div>`;
+                <div class="sync-msg">从公众号拉取文章 → AI抽取活动 → 同步到飞书</div>`;
             modal.style.display = 'block';
 
             try {
@@ -1334,7 +1555,7 @@
                     body.innerHTML = `
                         <div class="sync-spinner"></div>
                         <div class="sync-phase">同步进行中</div>
-                        <div class="sync-msg">${esc(r.message)}</div>
+                        <div class="sync-msg">${esc(r.message)}，请稍候…</div>
                         <button class="btn btn-outline" onclick="document.getElementById('sync-modal').style.display='none'" style="margin-top:12px">关闭</button>`;
                     return;
                 }
@@ -1364,10 +1585,10 @@
                             <div class="sync-result">
                                 文章拉取: <strong>${r.articles_fetched ?? 0}</strong> 篇<br>
                                 事件同步: <strong>${r.events_synced ?? 0}</strong> 条<br>
-                                失败: <strong>${r.events_failed ?? 0}</strong> 条
+                                失败: <strong>${r.events_failed ?? 0}</strong> 条${r.auto_archived ? `<br>自动归档: <strong>${r.auto_archived}</strong> 条` : ''}
                             </div>
-                            <button class="btn btn-primary" onclick="document.getElementById('sync-modal').style.display='none';loadStats();loadEvents()" style="margin-top:16px">刷新数据</button>`;
-                        loadStats(); loadEvents();
+                            <button class="btn btn-primary" onclick="document.getElementById('sync-modal').style.display='none';loadStats();loadEvents();loadPipelineStatus()" style="margin-top:16px">刷新数据</button>`;
+                        loadStats(); loadEvents(); loadPipelineStatus();
                     } else if (s.phase === 'error') {
                         clearInterval(poll);
                         body.innerHTML = `
@@ -1377,7 +1598,7 @@
                             <button class="btn btn-outline" onclick="document.getElementById('sync-modal').style.display='none'" style="margin-top:12px">关闭</button>`;
                     } else {
                         // 仍在进行中，更新状态文字
-                        const phaseMap = { fetching: '拉取文章', extracting: '抽取活动', syncing: '同步飞书' };
+                        const phaseMap = { fetching: '从 we-mp-rss 拉取最新推文', extracting: '用 AI 分析文章，抽取活动信息', syncing: '将活动信息写入飞书多维表格' };
                         body.innerHTML = `
                             <div class="sync-spinner"></div>
                             <div class="sync-phase">${phaseMap[s.phase] || '处理中'}…</div>
@@ -1413,6 +1634,34 @@
             } catch (e) { toast('操作失败: ' + e.message, 'error'); }
         }
 
+        async function toggleParticipate(eventId, value) {
+            try {
+                const r = await api(`/events/${eventId}/participate?value=${value}`, { method: 'POST' });
+                toast(value ? '已标记参与' : '已取消参与', 'success');
+                loadEvents(currentPage);
+            } catch (e) { toast('操作失败: ' + e.message, 'error'); }
+        }
+
+        async function archiveEvent(eventId) {
+            if (!confirm('确定要归档此活动？归档后图片和详细内容将被清除，仅保留基本信息用于追溯。')) return;
+            try {
+                const r = await api(`/events/${eventId}/archive`, { method: 'POST' });
+                toast(r.message || '已归档', 'success');
+                loadEvents(currentPage);
+                loadStats();
+            } catch (e) { toast('归档失败: ' + e.message, 'error'); }
+        }
+
+        async function unarchiveEvent(eventId) {
+            if (!confirm('确定要取消归档？事件将恢复为待同步状态。')) return;
+            try {
+                const r = await api(`/events/${eventId}/unarchive`, { method: 'POST' });
+                toast(r.message || '已取消归档', 'success');
+                loadEvents(currentPage);
+                loadStats();
+            } catch (e) { toast('取消归档失败: ' + e.message, 'error'); }
+        }
+
         // ── Helpers ──
         function esc(t) { if (!t) return ''; const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
 
@@ -1420,10 +1669,11 @@
             if (s === 'synced') return 'badge-synced';
             if (['extracted','pending_ai'].includes(s)) return 'badge-pending';
             if (s === 'failed_sync') return 'badge-failed';
+            if (s === 'archived') return 'badge-archived';
             return 'badge-unknown';
         }
         function statusLabel(s) {
-            return { synced:'已同步', extracted:'已抽取', pending_ai:'待处理', failed_sync:'同步失败', failed_extract:'抽取失败', needs_image_retry:'图片重试' }[s] || s;
+            return { synced:'已同步', extracted:'已抽取', pending_ai:'待处理', failed_sync:'同步失败', failed_extract:'抽取失败', needs_image_retry:'图片重试', archived:'已归档' }[s] || s;
         }
         function timeBadgeCls(s) {
             return { upcoming:'badge-upcoming', past:'badge-past', ongoing:'badge-ongoing' }[s] || 'badge-unknown';
@@ -1432,8 +1682,126 @@
             return { upcoming:'即将开始', past:'已结束', ongoing:'进行中', unknown:'未知' }[s] || s;
         }
 
+        // ── 公众号管理 ──
+        let _searchResults = [];  // 缓存搜索结果，供 onclick 引用
+
+        async function loadAccounts() {
+            const tbody = document.getElementById('accounts-table');
+            try {
+                const d = await api('/accounts?limit=100');
+                const list = (d.data && d.data.list) || d.list || [];
+                if (!list.length) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-sec);text-align:center;padding:24px">暂无已订阅公众号，请通过搜索添加</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = list.map(mp => `
+                    <tr>
+                        <td><img class="account-avatar" src="${esc(mp.mp_cover || '')}" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 40%22><rect fill=%22%231a5c3a%22 width=%2240%22 height=%2240%22 rx=%2220%22/><text x=%2220%22 y=%2226%22 text-anchor=%22middle%22 fill=%22white%22 font-size=%2216%22>${esc((mp.mp_name||'?')[0])}</text></svg>'" alt=""></td>
+                        <td style="font-weight:600">${esc(mp.mp_name || '')}</td>
+                        <td style="color:var(--text-sec);font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(mp.mp_intro || '')}</td>
+                        <td>${mp.status === 1 ? '<span class="account-status-on">启用</span>' : '<span class="account-status-off">停用</span>'}</td>
+                        <td>
+                            <button class="btn btn-outline btn-sm" onclick="refreshAccount('${esc(mp.id)}','${esc(mp.mp_name)}')">抓取最新推文</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteAccount('${esc(mp.id)}','${esc(mp.mp_name)}')">删除</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">加载失败: ${esc(e.message)}</td></tr>`;
+            }
+        }
+
+        async function searchAccounts() {
+            const kw = document.getElementById('account-search-input').value.trim();
+            const box = document.getElementById('account-search-results');
+            if (!kw) { box.style.display = 'none'; return; }
+            box.style.display = 'block';
+            box.innerHTML = '<div style="padding:16px;text-align:center"><span class="spinner"></span> 搜索中…</div>';
+            try {
+                const d = await api(`/accounts/search/${encodeURIComponent(kw)}`);
+                const list = (d.data && d.data.list) || d.list || [];
+                _searchResults = list;
+                if (!list.length) {
+                    box.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-sec)">未找到相关公众号</div>';
+                    return;
+                }
+                box.innerHTML = list.map((mp, idx) => `
+                    <div class="account-search-item">
+                        <img src="${esc(mp.mp_cover || mp.avatar || '')}" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 40%22><rect fill=%22%231a5c3a%22 width=%2240%22 height=%2240%22 rx=%2220%22/><text x=%2220%22 y=%2226%22 text-anchor=%22middle%22 fill=%22white%22 font-size=%2216%22>${esc((mp.mp_name||mp.name||'?')[0])}</text></svg>'" alt="">
+                        <div class="acc-info">
+                            <div class="acc-name">${esc(mp.mp_name || mp.name || '')}</div>
+                            <div class="acc-intro">${esc(mp.mp_intro || mp.introduction || '')}</div>
+                        </div>
+                        <button class="btn btn-primary btn-sm" onclick="addAccount(this, ${idx})">添加</button>
+                    </div>
+                `).join('');
+            } catch (e) {
+                _searchResults = [];
+                box.innerHTML = `<div style="padding:16px;color:var(--red)">搜索失败: ${esc(e.message)}</div>`;
+            }
+        }
+
+        async function addAccount(btn, idx) {
+            const mp = _searchResults[idx];
+            if (!mp) { toast('数据异常，请重新搜索', 'error'); return; }
+            btn.disabled = true;
+            btn.textContent = '添加中…';
+            try {
+                const body = {
+                    mp_name: mp.mp_name || mp.name || '',
+                    mp_id: mp.mp_id || mp.fakeid || mp.id || '',
+                    avatar: mp.avatar || mp.mp_cover || '',
+                    mp_cover: mp.mp_cover || mp.avatar || '',
+                    mp_intro: mp.mp_intro || mp.introduction || '',
+                };
+                await api('/accounts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                toast('公众号已添加: ' + (body.mp_name || ''), 'success');
+                btn.textContent = '已添加';
+                btn.className = 'btn btn-sm';
+                btn.style.background = 'var(--accent-lt)';
+                btn.style.color = 'var(--accent)';
+                loadAccounts();
+            } catch (e) {
+                toast('添加失败: ' + e.message, 'error');
+                btn.disabled = false;
+                btn.textContent = '添加';
+            }
+        }
+
+        async function refreshAccount(mpId, mpName) {
+            if (!confirm(`确认刷新「${mpName}」的文章？`)) return;
+            try {
+                const d = await api(`/accounts/update/${encodeURIComponent(mpId)}`);
+                toast(d.message || '已触发文章更新', 'success');
+            } catch (e) {
+                toast('刷新失败: ' + e.message, 'error');
+            }
+        }
+
+        async function deleteAccount(mpId, mpName) {
+            if (!confirm(`确认删除公众号「${mpName}」？此操作不可恢复。`)) return;
+            try {
+                await api(`/accounts/${encodeURIComponent(mpId)}`, { method: 'DELETE' });
+                toast('已删除: ' + mpName, 'success');
+                loadAccounts();
+            } catch (e) {
+                toast('删除失败: ' + e.message, 'error');
+            }
+        }
+
+        // Enter 键触发搜索
+        document.addEventListener('DOMContentLoaded', () => {
+            const input = document.getElementById('account-search-input');
+            if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') searchAccounts(); });
+        });
+
         // ── Init ──
         document.addEventListener('DOMContentLoaded', () => {
+            loadPipelineStatus();
             loadTodayEvents();
             loadPendingItems();
             loadStats();
@@ -1442,7 +1810,9 @@
             loadRuns();
             loadFeishuLink();
             loadAccuracy();
+            loadAccounts();
             setInterval(loadStats, 30000);
+            setInterval(loadPipelineStatus, 60000);
         });
     </script>
 </body>

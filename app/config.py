@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     feishu_report_daily_enabled: bool = True
     feishu_report_weekly_enabled: bool = True
     auto_sync_cron: str = "0 * * * *"  # 默认每小时同步一次
+    auto_archive_expired_days: int = 30  # 过期活动自动归档天数，0 表示禁用
     feishu_bot_enabled: bool = False
     feishu_bot_app_id: str = ""
     feishu_bot_app_secret: str = ""
@@ -69,3 +70,36 @@ def get_settings() -> Settings:
     settings.images_dir.mkdir(parents=True, exist_ok=True)
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
     return settings
+
+
+def validate_settings(settings: Settings) -> list[str]:
+    """校验当前配置下必需的环境变量，返回缺失项的警告列表。
+
+    只检查当前启用功能所需的变量，不阻止启动。
+    """
+    warnings: list[str] = []
+    # 飞书 Bitable 相关（lark_cli 和 auto 模式都需要）
+    if settings.feishu_provider in ("lark_cli", "auto"):
+        if not settings.feishu_bitable_app_token:
+            warnings.append("FEISHU_BITABLE_APP_TOKEN 未配置（飞书多维表格同步需要）")
+        if not settings.feishu_bitable_table_id:
+            warnings.append("FEISHU_BITABLE_TABLE_ID 未配置（飞书多维表格同步需要）")
+    # 飞书 OpenAPI 相关
+    if settings.feishu_provider in ("openapi", "auto"):
+        if not settings.feishu_app_id:
+            warnings.append("FEISHU_APP_ID 未配置（飞书 OpenAPI 模式需要）")
+        if not settings.feishu_app_secret:
+            warnings.append("FEISHU_APP_SECRET 未配置（飞书 OpenAPI 模式需要）")
+    # 飞书机器人
+    if settings.feishu_bot_enabled:
+        if not settings.feishu_bot_app_id:
+            warnings.append("FEISHU_BOT_APP_ID 未配置（飞书机器人已启用但缺少 App ID）")
+    # Vision API（非 mock 模式）
+    if settings.vision_api_provider != "mock":
+        if not settings.vision_api_key:
+            warnings.append("VISION_API_KEY 未配置（Vision API 已启用但缺少密钥）")
+    # 报告发送
+    if settings.feishu_report_daily_enabled or settings.feishu_report_weekly_enabled:
+        if not settings.feishu_report_chat_id and not settings.feishu_report_user_id:
+            warnings.append("FEISHU_REPORT_CHAT_ID 和 FEISHU_REPORT_USER_ID 均未配置（报告发送需要至少一个）")
+    return warnings

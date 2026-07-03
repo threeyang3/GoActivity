@@ -53,7 +53,8 @@ def test_event_policy_marks_past_announcement_for_removal() -> None:
         db.close()
 
 
-def test_feishu_adapter_deletes_expired_event(monkeypatch) -> None:
+def test_feishu_adapter_updates_expired_event_status(monkeypatch) -> None:
+    """过期事件应更新状态（upsert）而非删除，保留在飞书表格中。"""
     init_db()
     db = SessionLocal()
     article = Article(
@@ -68,12 +69,14 @@ def test_feishu_adapter_deletes_expired_event(monkeypatch) -> None:
         article_id=article.article_id,
         title=article.title,
         start_time=(now_shanghai() - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S"),
-        feishu_record_id="rec_delete_me",
+        feishu_record_id="rec_keep_me",
         status="synced",
     )
     db.add(article)
     db.add(event)
     db.commit()
+
+    upserted_events: list[str] = []
 
     class FakeClient:
         def __init__(self, db):
@@ -81,17 +84,21 @@ def test_feishu_adapter_deletes_expired_event(monkeypatch) -> None:
             self.settings = type("Settings", (), {"feishu_dry_run": False})()
 
         def upsert_event(self, event):
-            raise AssertionError("Expired event should not upsert")
+            upserted_events.append(event.event_id)
+            return {"return_code": 0, "stdout": "upserted", "stderr": "", "dry_run": False, "record_id": event.feishu_record_id}
 
         def delete_event(self, event):
-            return {"return_code": 0, "stdout": "deleted", "stderr": "", "dry_run": False, "record_id": ""}
+            raise AssertionError("Expired event should not be deleted")
 
     monkeypatch.setattr("app.services.feishu._build_client", lambda db: FakeClient(db))
     try:
         result = FeishuAdapter(db).sync_event(event)
         db.refresh(event)
         assert result["status"] == "expired_hidden"
-        assert event.feishu_record_id == ""
+        # 记录保留在飞书，feishu_record_id 不清空
+        assert event.feishu_record_id == "rec_keep_me"
+        # 确认调用了 upsert 而非 delete
+        assert upserted_events == ["event_policy_2"]
     finally:
         db.query(Event).filter(Event.event_id == event.event_id).delete()
         db.query(Article).filter(Article.article_id == article.article_id).delete()

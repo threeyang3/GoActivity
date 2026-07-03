@@ -16,6 +16,23 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def subprocess_kwargs() -> dict[str, Any]:
+    """返回平台特定的 subprocess 参数。
+
+    Windows 上包含 CREATE_NO_WINDOW 以避免弹出终端窗口。
+    """
+    kwargs: dict[str, Any] = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "check": False,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return kwargs
+
+
 def is_windows_cmd_launcher(cli_path: str) -> bool:
     """判断 lark-cli 路径是否是 Windows .cmd 启动器。"""
     return Path(cli_path).name.lower() == "lark-cli.cmd"
@@ -77,12 +94,8 @@ def run_cli_command(
     """
     completed = subprocess.run(
         command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
         timeout=timeout,
-        check=False,
+        **subprocess_kwargs(),
     )
     result: dict[str, Any] = {
         "return_code": completed.returncode,

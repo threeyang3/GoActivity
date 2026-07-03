@@ -27,15 +27,34 @@ python gui_manager.py
 
 This starts GoActivity (port 8000) and we-mp-rss (port 8001) automatically, with a dual-status tray icon and right-click menu for independent control.
 
+### Auto-restart
+
+Both services are monitored every 10 seconds. If a service crashes or becomes unresponsive (3 consecutive health check failures), the tray manager automatically restarts it with exponential backoff (5s → 10s → 20s, max 3 attempts). User-initiated stops are not affected by auto-restart.
+
+Subprocess stdout/stderr are logged to:
+- `logs/goactivity_service.log` (GoActivity)
+- `logs/werss_service.log` (we-mp-rss)
+
+Log files auto-rotate at 5 MB (old log kept as `.log.old`).
+
 ## we-mp-rss without Docker
 
-Setup:
+### Prerequisites
+
+we-mp-rss requires Playwright for browser automation (WeChat login). Install Playwright browsers after setting up the conda environment:
+
+```powershell
+conda activate we-mp-rss
+playwright install chromium
+```
+
+### Setup
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-we-mp-rss.ps1
 ```
 
-Start independently (if not using tray manager):
+### Start independently (if not using tray manager)
 
 ```powershell
 cd .\we-mp-rss

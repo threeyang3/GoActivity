@@ -32,6 +32,8 @@ class EventOut(BaseModel):
     event_time_status: str
     retention_decision: str
     user_keep: bool
+    user_participate: bool = False
+    archived_at: str | None = None
     tags: list[str] = Field(default_factory=list)
     poster_images: list[str] = Field(default_factory=list)
     cover_image: str = ""
@@ -179,3 +181,16 @@ class FeishuViewSetupResponse(BaseModel):
     skipped: int
     failed: int
     results: list[ViewSetupResultItem] = Field(default_factory=list)
+
+
+class ArchiveResponse(BaseModel):
+    event_id: str
+    status: str
+    archived_at: str | None
+    message: str
+
+
+class ParticipateResponse(BaseModel):
+    event_id: str
+    user_participate: bool
+    status: str

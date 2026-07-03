@@ -108,12 +108,48 @@ def parse_datetime(value: str) -> datetime | None:
 
 
 def event_time_status(start_time: str, end_time: str) -> str:
+    """根据开始/结束时间判断事件的时间状态。
+
+    返回值：
+    - unknown:  无任何时间信息
+    - upcoming: 开始时间在未来
+    - ongoing:  当前时间在 start_time 和 end_time 之间
+    - ended:    结束时间在过去 7 天内
+    - expired:  结束时间在 7 天前（或开始时间在 7 天前且无结束时间）
+    - past:     通用回退（有时间但无法细分）
+    """
+    from datetime import timedelta
+
     end_at = parse_datetime(end_time)
     start_at = parse_datetime(start_time)
-    reference = end_at or start_at
-    if not reference:
+    now = now_shanghai()
+
+    # 无任何时间信息
+    if not start_at and not end_at:
         return EventTimeStatus.UNKNOWN
-    return EventTimeStatus.PAST if reference < now_shanghai() else EventTimeStatus.UPCOMING
+
+    # 有结束时间：基于结束时间判断
+    if end_at:
+        if end_at < now:
+            # 已结束
+            if now - end_at <= timedelta(days=7):
+                return EventTimeStatus.ENDED
+            return EventTimeStatus.EXPIRED
+        # 结束时间在未来
+        if start_at and start_at <= now:
+            return EventTimeStatus.ONGOING
+        return EventTimeStatus.UPCOMING
+
+    # 只有开始时间
+    if start_at:
+        if start_at < now:
+            # 开始时间已过，无结束时间 → 假设活动已结束
+            if now - start_at <= timedelta(days=7):
+                return EventTimeStatus.ENDED
+            return EventTimeStatus.EXPIRED
+        return EventTimeStatus.UPCOMING
+
+    return EventTimeStatus.UNKNOWN
 
 
 class EventPolicyService:
@@ -121,6 +157,16 @@ class EventPolicyService:
         self.db = db
 
     def apply(self, event: Event) -> EventPolicyDecision:
+        # 归档事件不走策略引擎，直接返回当前状态
+        if event.status == EventStatus.ARCHIVED:
+            return EventPolicyDecision(
+                event.article_type or "unknown",
+                event.article_type_reason or "archived",
+                event.event_time_status or EventTimeStatus.UNKNOWN,
+                event.retention_decision or RetentionDecision.AUTO_ARCHIVED,
+                False,
+            )
+
         article = self.db.query(Article).filter(Article.article_id == event.article_id).one_or_none()
         if article is None:
             return EventPolicyDecision("unknown", "article not found", EventTimeStatus.UNKNOWN, RetentionDecision.KEEP, False)
@@ -132,13 +178,13 @@ class EventPolicyService:
             decision = EventPolicyDecision(article_type, reason, time_status, RetentionDecision.KEEP_USER, False)
         elif gate.retention_decision == RetentionDecision.SKIP_OLDER_THAN_60_DAYS:
             decision = EventPolicyDecision(article_type, reason, time_status, gate.retention_decision, True)
-        elif article_type in {"announcement", "recruitment"} and time_status == EventTimeStatus.PAST:
+        elif article_type in {"announcement", "recruitment"} and time_status in {EventTimeStatus.PAST, EventTimeStatus.ENDED, EventTimeStatus.EXPIRED}:
             decision = EventPolicyDecision(article_type, reason, time_status, RetentionDecision.DROP_PAST_EVENT, True)
         elif gate.retention_decision == RetentionDecision.SKIP_OLDER_THAN_30_DAYS:
             decision = EventPolicyDecision(article_type, reason, time_status, gate.retention_decision, True)
         elif article_type == "recap":
-            if time_status == EventTimeStatus.UPCOMING:
-                # 推文含回顾关键词但活动时间在未来，不应标记为回顾
+            if time_status in {EventTimeStatus.UPCOMING, EventTimeStatus.ONGOING}:
+                # 推文含回顾关键词但活动时间在未来或进行中，不应标记为回顾
                 decision = EventPolicyDecision(article_type, reason, time_status, RetentionDecision.KEEP, False)
             else:
                 # 回顾类文章：已结束的活动，不写入飞书（用户可手动 keep 恢复）

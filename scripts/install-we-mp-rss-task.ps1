@@ -28,10 +28,10 @@ Write-Host "[INFO] 创建任务 '$TASK_NAME'..." -ForegroundColor Green
 # 触发器：开机时启动
 $trigger = New-ScheduledTaskTrigger -AtStartup
 
-# 操作：运行 Python 脚本
+# 操作：运行 Python 脚本（启用 Cookie 自动续期）
 $action = New-ScheduledTaskAction `
-    -Execute $PYTHON_EXE `
-    -Argument $SCRIPT `
+    -Execute "cmd.exe" `
+    -Argument "/c set WE_RSS.AUTH=True && `"$PYTHON_EXE`" $SCRIPT" `
     -WorkingDirectory $WORKING_DIR
 
 # 设置：开机启动、不唤醒、允许按需运行

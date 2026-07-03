@@ -31,12 +31,14 @@ def get_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
         func.sum(case((Event.status == EventStatus.SYNCED, 1), else_=0)).label("synced"),
         func.sum(case((Event.status.in_([EventStatus.EXTRACTED, EventStatus.PENDING_AI]), 1), else_=0)).label("pending"),
         func.sum(case((Event.status == EventStatus.FAILED_SYNC, 1), else_=0)).label("failed"),
+        func.sum(case((Event.status == EventStatus.ARCHIVED, 1), else_=0)).label("archived"),
     ).first()
 
     total_events = event_stats.total if event_stats else 0
     synced_events = event_stats.synced if event_stats else 0
     pending_events = event_stats.pending if event_stats else 0
     failed_events = event_stats.failed if event_stats else 0
+    archived_events = event_stats.archived if event_stats else 0
 
     # 最近同步
     latest_run = db.query(SyncRun).order_by(SyncRun.started_at.desc()).first()
@@ -53,7 +55,7 @@ def get_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
     # 最近事件
     recent_events = (
         db.query(Event)
-        .filter(Event.status.notin_([EventStatus.IGNORED_NON_EVENT, EventStatus.EXPIRED_HIDDEN]))
+        .filter(Event.status.notin_(EventStatus.TERMINAL_STATUSES))
         .order_by(Event.created_at.desc())
         .limit(10)
         .all()
@@ -66,6 +68,7 @@ def get_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
             "synced": synced_events,
             "pending": pending_events,
             "failed": failed_events,
+            "archived": archived_events,
         },
         "latest_sync": latest_sync,
         "recent_events": [
@@ -108,8 +111,8 @@ def list_events(
     if status:
         query = query.filter(Event.status == status)
     else:
-        # 默认排除已忽略的事件
-        query = query.filter(Event.status.notin_([EventStatus.IGNORED_NON_EVENT, EventStatus.EXPIRED_HIDDEN]))
+        # 默认排除终态事件（已忽略、已过期隐藏、已过滤、已归档）
+        query = query.filter(Event.status.notin_(EventStatus.TERMINAL_STATUSES))
 
     if category:
         query = query.filter(Event.category_1 == category)
@@ -172,6 +175,9 @@ def list_events(
                 "retention_decision": e.retention_decision,
                 "confidence": e.confidence,
                 "feishu_record_id": e.feishu_record_id,
+                "user_keep": e.user_keep,
+                "user_participate": e.user_participate,
+                "archived_at": e.archived_at.isoformat() if e.archived_at else None,
                 "created_at": e.created_at.isoformat() if e.created_at else None,
             }
             for e in events
@@ -226,6 +232,8 @@ def get_event_detail(event_id: str, db: Session = Depends(get_db)) -> dict[str, 
         "confidence": event.confidence,
         "feishu_record_id": event.feishu_record_id,
         "dedup_key": event.dedup_key,
+        "user_participate": event.user_participate,
+        "archived_at": event.archived_at.isoformat() if event.archived_at else None,
         "created_at": event.created_at.isoformat() if event.created_at else None,
         "updated_at": event.updated_at.isoformat() if event.updated_at else None,
         # 演出信息
@@ -269,7 +277,7 @@ def search_events(
         return {"total": 0, "page": page, "page_size": page_size, "pages": 0, "items": []}
 
     query = db.query(Event).filter(
-        Event.status.notin_([EventStatus.IGNORED_NON_EVENT, EventStatus.EXPIRED_HIDDEN]),
+        Event.status.notin_(EventStatus.TERMINAL_STATUSES),
         (
             Event.title.contains(q) |
             Event.location.contains(q) |
@@ -317,7 +325,7 @@ def get_today_events(db: Session = Depends(get_db)) -> dict[str, Any]:
 
     # 查找今日活动（开始时间在今天范围内）
     events = db.query(Event).filter(
-        Event.status.notin_([EventStatus.IGNORED_NON_EVENT, EventStatus.EXPIRED_HIDDEN]),
+        Event.status.notin_(EventStatus.TERMINAL_STATUSES),
         Event.start_time >= today_start.strftime("%Y-%m-%d"),
         Event.start_time < today_end.strftime("%Y-%m-%d"),
     ).order_by(Event.start_time.asc()).all()
@@ -325,7 +333,7 @@ def get_today_events(db: Session = Depends(get_db)) -> dict[str, Any]:
     # 查找即将到来的活动（未来 7 天）
     week_end = today_start + timedelta(days=7)
     upcoming_events = db.query(Event).filter(
-        Event.status.notin_([EventStatus.IGNORED_NON_EVENT, EventStatus.EXPIRED_HIDDEN]),
+        Event.status.notin_(EventStatus.TERMINAL_STATUSES),
         Event.start_time >= today_end.strftime("%Y-%m-%d"),
         Event.start_time < week_end.strftime("%Y-%m-%d"),
     ).order_by(Event.start_time.asc()).limit(10).all()
@@ -499,6 +507,99 @@ def get_feishu_link() -> dict[str, Any]:
         "url": url,
         "app_token": app_token,
         "table_id": table_id,
+    }
+
+
+@router.get("/dashboard/pipeline-status")
+def get_pipeline_status(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """获取数据管道状态 — 用于管理页面顶部的状态指示器。"""
+    import requests as http_requests
+    from app.config import get_settings
+
+    settings = get_settings()
+
+    # 1. we-mp-rss 服务健康检查
+    rss_online = False
+    try:
+        resp = http_requests.get(
+            f"{settings.we_mp_rss_base_url}/api/docs", timeout=3
+        )
+        rss_online = resp.status_code == 200
+    except Exception:
+        pass
+
+    # 2. 最新文章入库时间
+    latest_article = (
+        db.query(Article)
+        .order_by(Article.created_at.desc())
+        .first()
+    )
+    latest_article_ingested_at = (
+        latest_article.created_at.isoformat() if latest_article else None
+    )
+    latest_article_mp_name = latest_article.mp_name if latest_article else None
+
+    # 3. 最新文章的公众号发布时间
+    # publish_time 格式不统一，取最近 created_at 的那篇的 publish_time
+    latest_publish_time = latest_article.publish_time if latest_article else None
+
+    # 4. 最后一次同步运行记录
+    latest_run = db.query(SyncRun).order_by(SyncRun.started_at.desc()).first()
+    last_sync = None
+    if latest_run:
+        last_sync = {
+            "run_id": latest_run.run_id,
+            "source": latest_run.source,
+            "status": latest_run.status,
+            "started_at": latest_run.started_at.isoformat() if latest_run.started_at else None,
+            "completed_at": latest_run.completed_at.isoformat() if latest_run.completed_at else None,
+            "imported_count": latest_run.imported_count,
+        }
+
+    # 5. 自动同步配置
+    auto_sync_cron = settings.auto_sync_cron or ""
+
+    # 6. 待同步事件数
+    pending_sync_count = (
+        db.query(func.count(Event.id))
+        .filter(
+            Event.status.in_([EventStatus.EXTRACTED, EventStatus.PENDING_AI]),
+            Event.feishu_record_id == "",
+        )
+        .scalar()
+        or 0
+    )
+
+    # 7. 文章总数
+    total_articles = db.query(func.count(Article.id)).scalar() or 0
+
+    # 9. 已归档事件数
+    archived_count = (
+        db.query(func.count(Event.id))
+        .filter(Event.status == EventStatus.ARCHIVED)
+        .scalar()
+        or 0
+    )
+
+    # 10. 自动归档配置
+    auto_archive_days = settings.auto_archive_expired_days
+
+    # 8. 飞书配置状态
+    feishu_configured = bool(settings.feishu_bitable_app_token)
+
+    return {
+        "rss_online": rss_online,
+        "rss_url": settings.we_mp_rss_base_url,
+        "total_articles": total_articles,
+        "latest_article_ingested_at": latest_article_ingested_at,
+        "latest_article_mp_name": latest_article_mp_name,
+        "latest_publish_time": latest_publish_time,
+        "last_sync": last_sync,
+        "auto_sync_cron": auto_sync_cron,
+        "pending_sync_count": pending_sync_count,
+        "feishu_configured": feishu_configured,
+        "archived_count": archived_count,
+        "auto_archive_expired_days": auto_archive_days,
     }
 
 

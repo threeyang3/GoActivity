@@ -26,9 +26,12 @@ SELECT_OPTIONS: dict[str, set[str]] = {
     "一级分类": {"讲座", "演出", "比赛", "招募", "展览", "工作坊", "分享会", "其他"},
     "二级分类": {"学术", "科技", "艺术", "公益", "体育", "娱乐", "招聘", "其他"},
     "活动类型": {"讲座", "演出·放映", "比赛·征稿", "志愿者招募", "普通招募", "普通活动", "非活动"},
-    "状态": {"pending", "extracted", "synced", "failed_sync", "failed_extract", "ignored_non_event"},
+    "状态": {"pending", "pending_ai", "extracted", "synced", "failed_sync", "failed_extract",
+             "ignored_non_event", "expired_hidden", "filtered_out", "needs_image_retry", "archived"},
     "时间状态": {"unknown", "scheduled", "ongoing", "ended", "expired", "upcoming", "past"},
-    "保留决策": {"keep", "remove", "pending_review", "keep_recap", "keep_recap_lowest", "keep_user", "drop_past_event"},
+    "保留决策": {"keep", "keep_user", "keep_recap", "keep_recap_lowest",
+                 "drop_past_event", "skip_older_than_30_days", "skip_older_than_60_days",
+                 "auto_archived", "user_archived"},
     "标签": {"免费", "收费", "线上", "线下", "报名中", "已截止", "需审核", "学生专属", "公开", "校内", "推荐"},
 }
 
@@ -136,9 +139,11 @@ def build_record_fields(event: Event) -> dict[str, Any]:
     set_if("时间状态", select_text("时间状态", event.event_time_status))
     set_if("保留决策", select_text("保留决策", event.retention_decision))
     set_if("用户置顶", checkbox(event.user_keep))
+    set_if("用户参与", checkbox(event.user_participate))
     set_if("置信度", number(event.confidence))
     set_if("关联原因", event.relevance_reason)
     set_if("更新时间", to_datetime_str(utcnow().isoformat()))
+    set_if("归档时间", to_datetime_str(event.archived_at.isoformat() if event.archived_at else None))
 
     # 演出信息
     set_if("演出类型", event.performance_type)

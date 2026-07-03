@@ -33,6 +33,8 @@ def event_to_out(event: Event) -> EventOut:
         event_time_status=event.event_time_status,
         retention_decision=event.retention_decision,
         user_keep=event.user_keep,
+        user_participate=event.user_participate,
+        archived_at=event.archived_at.isoformat() if event.archived_at else None,
         tags=loads_list(event.tags),
         poster_images=loads_list(event.poster_images),
         cover_image=_s(event.cover_image),

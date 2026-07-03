@@ -10,12 +10,15 @@ from app.db import get_db
 from app.models import Event
 from app.routes.helpers import event_to_out
 from app.schemas import (
+    ArchiveResponse,
     CleanupExpiredResponse,
     EventKeepResponse,
     EventOut,
     ExtractResponse,
     FeishuSyncResponse,
+    ParticipateResponse,
 )
+from app.services.archive_service import ArchiveService
 from app.services.event_extractor import EventExtractor
 from app.services.feishu import FeishuAdapter
 from app.utils.constants import EventStatus
@@ -36,6 +39,8 @@ def list_events(
     query = db.query(Event).options(joinedload(Event.article))
     if status:
         query = query.filter(Event.status == status)
+    else:
+        query = query.filter(Event.status.notin_(EventStatus.TERMINAL_STATUSES))
     offset = (page - 1) * page_size
     events = query.order_by(Event.created_at.desc()).offset(offset).limit(page_size).all()
     return [event_to_out(event) for event in events]
@@ -78,8 +83,61 @@ def keep_event(event_id: str, value: bool = True, db: Session = Depends(get_db))
     )
 
 
+@router.post("/events/{event_id}/participate", response_model=ParticipateResponse)
+def participate_event(event_id: str, value: bool = True, db: Session = Depends(get_db)) -> ParticipateResponse:
+    """标记/取消标记用户参与活动。参与的活动不会被自动归档。"""
+    event = db.query(Event).filter(Event.event_id == event_id).one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    event.user_participate = value
+    db.commit()
+    return ParticipateResponse(
+        event_id=event.event_id,
+        user_participate=event.user_participate,
+        status=event.status,
+    )
+
+
+@router.post("/events/{event_id}/archive", response_model=ArchiveResponse)
+def archive_event(event_id: str, db: Session = Depends(get_db)) -> ArchiveResponse:
+    """手动归档事件：清除重数据，保留基本信息用于追溯。"""
+    event = (
+        db.query(Event)
+        .options(joinedload(Event.article))
+        .filter(Event.event_id == event_id)
+        .one_or_none()
+    )
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if event.status == EventStatus.ARCHIVED:
+        return ArchiveResponse(event_id=event.event_id, status="already_archived", archived_at=event.archived_at.isoformat() if event.archived_at else None, message="事件已归档")
+    result = ArchiveService(db).archive_event(event, source="user")
+    return ArchiveResponse(
+        event_id=event.event_id,
+        status=result["status"],
+        archived_at=result.get("archived_at"),
+        message=result.get("message", ""),
+    )
+
+
+@router.post("/events/{event_id}/unarchive", response_model=ArchiveResponse)
+def unarchive_event(event_id: str, db: Session = Depends(get_db)) -> ArchiveResponse:
+    """取消归档：恢复事件状态为 extracted。"""
+    event = db.query(Event).filter(Event.event_id == event_id).one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    result = ArchiveService(db).unarchive_event(event)
+    return ArchiveResponse(
+        event_id=event.event_id,
+        status=result["status"],
+        archived_at=None,
+        message=result.get("message", ""),
+    )
+
+
 @router.post("/events/cleanup-expired", response_model=CleanupExpiredResponse)
 def cleanup_expired_events(db: Session = Depends(get_db)) -> CleanupExpiredResponse:
+    """扫描所有活跃事件，将过期事件的状态更新为 expired_hidden（保留在飞书表格中）。"""
     events = (
         db.query(Event)
         .options(joinedload(Event.article))

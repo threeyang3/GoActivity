@@ -28,6 +28,9 @@ if (Test-Path $PID_FILE) {
 Write-Host "[INFO] 启动 we-mp-rss..." -ForegroundColor Green
 Set-Location $WE_MP_RSS_DIR
 
+# 启用 Cookie 自动续期
+[Environment]::SetEnvironmentVariable("WE_RSS.AUTH", "True", "Process")
+
 # 后台启动
 $process = Start-Process -FilePath $PYTHON_EXE -ArgumentList "main.py", "-job", "True", "-init", "True" `
     -WorkingDirectory $WE_MP_RSS_DIR `

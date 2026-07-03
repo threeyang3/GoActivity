@@ -11,10 +11,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.config import get_settings, validate_settings
 from app.db import init_db
 from app.exceptions import AppError, FeishuError, ProviderError, SyncError, ValidationError
 from app.logging_config import setup_logging
-from app.routes import articles, events, health, reports, setup, sync, webhooks
+from app.routes import accounts, articles, events, health, reports, setup, sync, webhooks
 from app.routes.dashboard import router as dashboard_router
 from app.services.auto_sync import AutoSyncService
 from app.services.bot_consumer import BotEventConsumer
@@ -25,6 +26,10 @@ from app.services.scheduler import ReportScheduler
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     setup_logging()
     init_db()
+    # 启动时配置校验
+    settings = get_settings()
+    for warning in validate_settings(settings):
+        logger.warning("⚠ 配置缺失: %s", warning)
     # 启动定时任务调度器
     scheduler = ReportScheduler()
     scheduler.start()
@@ -150,3 +155,4 @@ app.include_router(setup.router)
 app.include_router(webhooks.router)
 app.include_router(articles.router)
 app.include_router(dashboard_router)
+app.include_router(accounts.router)

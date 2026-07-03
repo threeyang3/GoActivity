@@ -34,22 +34,22 @@ The current Windows machine has already been configured and verified.
 - Feishu target table: `活动库`
 - Feishu attachment field for posters: `海报附件`
 
-As of the latest verified run (2026-06-20):
+As of the latest verified run (2026-06-25):
 
 - all local `Event` rows are synced to Feishu
 - poster images are uploaded as real Feishu attachments
 - `event.feishu_record_id` is persisted locally and reused on update
 - Alembic migration system is active (4 migrations)
-- 144 tests passing
+- 162 tests passing
 - Event deduplication via `dedup_key` field
 
 ## Project Structure
 - `app/`
   FastAPI application code.
 - `app/routes/`
-  APIRouter modules: `health.py`, `events.py`, `sync.py`, `reports.py`, `setup.py`, `webhooks.py`, `articles.py`, `dashboard.py`.
+  APIRouter modules: `health.py`, `events.py`, `sync.py`, `reports.py`, `setup.py`, `webhooks.py`, `articles.py`, `dashboard.py`, `accounts.py`.
 - `app/services/`
-  Business logic for ingestion, image processing, extraction, Feishu sync, reports, diagnostics, auto-sync, scheduling, Feishu messaging, view setup, bot handler, bot consumer, extraction validator.
+  Business logic for ingestion, image processing, extraction, Feishu sync, reports, diagnostics, auto-sync, scheduling, Feishu messaging, view setup, bot handler, bot consumer, extraction validator, archive service.
 - `app/services/feishu_fields.py`
   Feishu Bitable field building logic: `build_record_fields`, `SELECT_OPTIONS`, type conversion helpers.
 - `app/services/extraction_validator.py`
@@ -81,7 +81,7 @@ As of the latest verified run (2026-06-20):
 - `scripts/`
   Management scripts for we-mp-rss (start/stop/status/install-task) and GoActivity setup.
 - `tests/`
-  Pytest suite (144 tests). `conftest.py` uses set-difference cleanup: records existing IDs before each test, deletes only new ones after.
+  Pytest suite (162 tests). `conftest.py` uses set-difference cleanup: records existing IDs before each test, deletes only new ones after.
 - `.github/workflows/ci.yml`
   CI pipeline: pytest on push/PR to main.
 - `we-mp-rss/`
@@ -113,6 +113,7 @@ Important values already used by the running project include:
 - `VISION_API_MODEL` — Vision 模型（智谱 AI: `glm-4.6v`）
 - `VISION_API_TIMEOUT_SECONDS` — Vision API 超时（默认 60）
 - `AUTO_SYNC_CRON` — 自动同步 cron 表达式（默认 `0 * * * *`，每小时）
+- `AUTO_ARCHIVE_EXPIRED_DAYS` — 过期活动自动归档天数（默认 30，0 禁用）
 - `FEISHU_BOT_ENABLED` — 启用/禁用飞书机器人（默认 false）
 - `FEISHU_BOT_APP_ID` — 飞书应用 App ID（bot 需要）
 - `FEISHU_BOT_RATE_LIMIT` — 机器人每用户每分钟消息上限（默认 10）
@@ -199,10 +200,16 @@ This re-evaluates poster_images for all synced events, removes decorative images
 
 ## Auto-Sync Flow
 Each hourly sync run executes these steps in order:
-1. Fetch new articles from we-mp-rss
-2. Retry failed image downloads (`needs_image_retry` events)
-3. Refresh event statuses (re-evaluate `event_time_status` for all synced events: `upcoming` → `past`)
-4. Sync new events to Feishu Bitable
+1. **Fetch candidates** (`fetch_candidates`): paginate we-mp-rss API, dedup against local DB, enrich missing content (fast, HTTP only)
+2. **Parallel ingest** (`ingest_candidates_parallel`): download images (5 workers) → OCR (5 workers, skipped if no images) → Vision API (skipped if no images + short content) → DB commit (4 workers, SQLite lock retry)
+3. Retry failed image downloads (`needs_image_retry` events)
+4. **Parallel status refresh** (`_refresh_event_statuses`): re-evaluate `event_time_status` for all synced events; changed ones synced to Feishu in parallel (2 workers)
+5. **Parallel Feishu sync** (`_sync_event_ids_parallel`): new events synced to Feishu Bitable in parallel (3 workers, per-thread SessionLocal + FeishuAdapter)
+6. **Auto-archive expired** (`auto_archive_expired`): events expired > N days archived automatically (skips `user_keep`/`user_participate`), configurable via `AUTO_ARCHIVE_EXPIRED_DAYS`
+
+Steps 4 and 5 use `ThreadPoolExecutor` with per-thread DB sessions, following the same thread-safety pattern as step 2. SQLite "database is locked" retries are handled automatically.
+
+Phase tracking: `GET /sync/status` returns `{running, phase, message}` where phase = `fetching | extracting | syncing | done | error`.
 
 ## Alembic Migrations
 The project uses Alembic for database schema migrations.
@@ -218,13 +225,14 @@ Current migration chain:
 2. `7701d0eef212` — add `events.dedup_key`
 3. `3b6e4c04bbee` — add `sync_logs.run_id`
 4. `a1b2c3d4e5f6` — add indexes on `events.status`, `events.start_time`, `events.feishu_record_id`
+5. `c2d3e4f5a6b7` — add `events.user_participate`, `events.archived_at`
 
 ## Coding Rules for This Repo
 - Use `apply_patch` for manual file edits.
 - Avoid broad refactors unless explicitly requested.
 - Preserve the current dual-service architecture.
 - Keep SQLite-compatible behavior unless a migration is explicitly requested.
-- Prefer extending existing services over introducing parallel implementations.
+- Parallel implementations (ThreadPoolExecutor) are used for I/O-bound operations (image download, OCR, article ingestion). Each worker must use independent `SessionLocal()` for SQLite thread safety.
 - For Feishu sync changes, preserve both:
   - text fields for event metadata
   - attachment upload for poster images
@@ -252,6 +260,15 @@ POST /reports/weekly?send_to_feishu=true
 GET  /sync/logs
 GET  /sync/runs/latest/we-mp-rss-json
 GET  /bot/status
+GET  /accounts                    # 列出已订阅公众号
+GET  /accounts/search/{kw}        # 搜索公众号
+POST /accounts                    # 添加公众号
+DELETE /accounts/{mp_id}          # 删除公众号
+GET  /accounts/update/{mp_id}     # 触发公众号文章更新
+POST /events/{event_id}/participate  # 标记/取消参与
+POST /events/{event_id}/archive      # 手动归档
+POST /events/{event_id}/unarchive    # 取消归档
+GET  /dashboard/pipeline-status      # 数据管道状态
 ```
 
 If touching Feishu sync, verify both:
@@ -266,6 +283,13 @@ If touching Feishu sync, verify both:
 - If `lark-cli` works in terminal but fails in the service, check executable resolution first.
 - If Feishu write succeeds locally but not via HTTP, restart the live `uvicorn` process to ensure it picked up new code.
 - APScheduler is pinned to `<4.0.0` (4.x has breaking API changes).
+- **Python 3.14 compatibility**: `asyncio.get_event_loop()` no longer auto-creates an event loop. The `we-mp-rss/main.py` has been patched to use `asyncio.new_event_loop()` + `asyncio.set_event_loop()` before `asyncio.run()`.
+- **Playwright dependency**: we-mp-rss requires Playwright browsers installed in its conda env (`playwright install chromium`). Without this, WeChat login QR code generation will fail.
+- **Conda env required for we-mp-rss**: `gui_manager.py` uses `D:\miniconda3\envs\we-mp-rss\python.exe` to start we-mp-rss. Do not use system Python (missing dependencies like python-docx).
+- **we-mp-rss Cookie 自动续期**: `we-mp-rss/driver/auth.py` 中 `renew_auth()` 每 6 小时用存储的 cookie 访问微信平台刷新会话，需 `WE_RSS.AUTH=True` 环境变量。启动脚本已配置。
+- **we-mp-rss 定时采集**: 数据库中已有 MessageTask（每天 9:00 采集所有公众号）。添加新公众号后自动纳入，无需额外配置。we-mp-rss 的增量获取靠数据库去重（url+id），每次拉最新页。
+- **we-mp-rss 过滤规则**: `filter_rules` 表是 HTML 内容清洗（移除广告/页脚等 DOM），不是文章筛选。不支持按标题/关键词过滤文章。
+- **we-mp-rss 浏览器弹窗**: `driver/wxarticle.py` 文章内容抓取已改为 `headless=True`（2026-06-27），不再弹出浏览器窗口。扫码登录（`driver/wx.py`）保持有头模式。
 
 ## Handoff Notes
 When continuing work, assume the following are already true unless a later failure shows otherwise:
@@ -275,14 +299,15 @@ When continuing work, assume the following are already true unless a later failu
 - all current events have already been synced to Feishu once
 - Vision API (智谱 AI GLM-4.6V) is configured and working
 - automatic sync service is running (hourly cron)
-- 13 Feishu views are created with proper filters (excluding past/expired/recap)
+- 11 Feishu views are created with proper filters (excluding past/expired/recap/archived)
 - daily/weekly reports are sent to user's Feishu via `FEISHU_REPORT_USER_ID`
 - Alembic migrations are up to date (4 migrations applied)
-- 144 tests passing, CI pipeline configured
+- 162 tests passing, CI pipeline configured
 - Web management UI available at `http://localhost:8000/` (editorial campus bulletin design)
 - Tray application manages both services, with dual-status icon and independent autostart
 - SQLite WAL mode enabled for better concurrent read/write performance
 - New accounts can be added following `docs/adding-accounts.md`
+- we-mp-rss Cookie 自动续期已启用（每 6 小时），定时采集已配置（每天 9:00，所有公众号）
 
 If you need repository-specific guidance for the collector service itself, also read:
 

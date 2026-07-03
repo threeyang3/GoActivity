@@ -1,7 +1,6 @@
 import json
 import logging
 import shutil
-import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +14,7 @@ from app.exceptions import FeishuError
 from app.models import Event, SyncLog
 from app.services.event_policy import EventPolicyService
 from app.utils.constants import EventStatus
-from app.utils.lark_cli import build_lark_cli_command, is_lark_cli
+from app.utils.lark_cli import build_lark_cli_command, is_lark_cli, run_cli_command
 from app.utils.time import utcnow
 
 # 字段构建逻辑拆分到独立模块，此处 re-export 保持外部 import 兼容
@@ -40,6 +39,19 @@ class FeishuAdapter:
         self.client = _build_client(db)
 
     def sync_event(self, event: Event) -> dict[str, Any]:
+        # 归档事件：直接 upsert（清除海报附件，保留基础字段），不走策略引擎
+        if event.status == EventStatus.ARCHIVED:
+            result = self.client.upsert_event(event)
+            if result["return_code"] == 0:
+                event.updated_at = utcnow()
+            self.db.commit()
+            return {
+                "status": event.status,
+                "dry_run": result["dry_run"],
+                "stdout": result["stdout"],
+                "stderr": result["stderr"],
+            }
+
         decision = EventPolicyService(self.db).apply(event)
         if not event.is_event_related and not event.user_keep:
             result = self.client.delete_event(event) if event.feishu_record_id else {
@@ -60,14 +72,26 @@ class FeishuAdapter:
                 "stderr": result["stderr"],
             }
         if decision.should_remove_from_feishu and not event.user_keep:
-            result = self.client.delete_event(event) if event.feishu_record_id else {
+            # 过期事件：更新状态而非删除，保留在飞书表格中
+            if event.feishu_record_id:
+                result = self.client.upsert_event(event)
+                if result["return_code"] == 0:
+                    event.updated_at = utcnow()
+                self.db.commit()
+                return {
+                    "status": event.status,
+                    "dry_run": result["dry_run"],
+                    "stdout": result["stdout"],
+                    "stderr": result["stderr"],
+                }
+            # 无飞书记录，仅更新本地状态
+            result = {
                 "return_code": 0,
-                "stdout": "Skipped Feishu sync for expired or stale event without an existing record.",
+                "stdout": "Updated local status for expired event (no Feishu record to update).",
                 "stderr": "",
                 "dry_run": self.client.settings.feishu_dry_run,
                 "record_id": "",
             }
-            event.feishu_record_id = ""
             event.updated_at = utcnow()
             self.db.commit()
             return {
@@ -132,25 +156,17 @@ class FeishuCLIClient(BaseFeishuClient):
             return result
         last_result: dict[str, Any] | None = None
         for attempt in range(1, self.settings.feishu_max_retries + 1):
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=60,
-                check=False,
-            )
-            record_id = _parse_record_id(completed.stdout) or event.feishu_record_id
+            cli_result = run_cli_command(command, timeout=60)
+            record_id = _parse_record_id(cli_result["data"]) or event.feishu_record_id
             last_result = {
-                "return_code": completed.returncode,
-                "stdout": completed.stdout,
-                "stderr": completed.stderr,
+                "return_code": cli_result["return_code"],
+                "stdout": cli_result["stdout"],
+                "stderr": cli_result["stderr"],
                 "dry_run": False,
                 "record_id": record_id,
             }
             self._log("feishu_event", event.event_id, " ".join(command), last_result, attempt=attempt)
-            if completed.returncode == 0:
+            if cli_result["return_code"] == 0:
                 return last_result
             if attempt < self.settings.feishu_max_retries:
                 time.sleep(self.settings.feishu_retry_delay_seconds)
@@ -168,19 +184,11 @@ class FeishuCLIClient(BaseFeishuClient):
             result = {"return_code": 0, "stdout": content, "stderr": "", "dry_run": True}
             self._log("feishu_message", "", " ".join(command), result, attempt=1)
             return result
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
-            check=False,
-        )
+        cli_result = run_cli_command(command, timeout=60)
         result = {
-            "return_code": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
+            "return_code": cli_result["return_code"],
+            "stdout": cli_result["stdout"],
+            "stderr": cli_result["stderr"],
             "dry_run": False,
         }
         self._log("feishu_message", "", " ".join(command), result, attempt=1)
@@ -224,25 +232,17 @@ class LarkCLIClient(BaseFeishuClient):
         self._ensure_cli_config()
         last_result: dict[str, Any] | None = None
         for attempt in range(1, self.settings.feishu_max_retries + 1):
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=60,
-                check=False,
-            )
-            record_id = _parse_lark_record_id(completed.stdout) or event.feishu_record_id
+            cli_result = run_cli_command(command, timeout=60)
+            record_id = _parse_lark_record_id(cli_result["data"]) or event.feishu_record_id
             last_result = {
-                "return_code": completed.returncode,
-                "stdout": completed.stdout,
-                "stderr": completed.stderr,
+                "return_code": cli_result["return_code"],
+                "stdout": cli_result["stdout"],
+                "stderr": cli_result["stderr"],
                 "dry_run": False,
                 "record_id": record_id,
             }
             self._log("feishu_event", event.event_id, " ".join(command), last_result, attempt=attempt)
-            if completed.returncode == 0:
+            if cli_result["return_code"] == 0:
                 if record_id:
                     self._upload_poster_attachments(event, record_id)
                 return last_result
@@ -288,19 +288,11 @@ class LarkCLIClient(BaseFeishuClient):
             }
             self._log("feishu_delete", event.event_id, " ".join(command), result, attempt=1)
             return result
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
-            check=False,
-        )
+        cli_result = run_cli_command(command, timeout=60)
         result = {
-            "return_code": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
+            "return_code": cli_result["return_code"],
+            "stdout": cli_result["stdout"],
+            "stderr": cli_result["stderr"],
             "dry_run": False,
             "record_id": "",
         }
@@ -343,24 +335,16 @@ class LarkCLIClient(BaseFeishuClient):
         for file_path in files:
             command.extend(["--file", file_path])
         command.extend(["--format", "json"])
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=120,
-            check=False,
-        )
+        cli_result = run_cli_command(command, timeout=120)
         result = {
-            "return_code": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
+            "return_code": cli_result["return_code"],
+            "stdout": cli_result["stdout"],
+            "stderr": cli_result["stderr"],
             "dry_run": False,
         }
         self._log("feishu_attachment", event.event_id, " ".join(command), result, attempt=1)
-        if completed.returncode != 0:
-            raise FeishuError(completed.stderr or "Failed to upload poster attachments with lark-cli.")
+        if cli_result["return_code"] != 0:
+            raise FeishuError(cli_result["stderr"] or "Failed to upload poster attachments with lark-cli.")
 
 
 class FeishuOpenAPIClient(BaseFeishuClient):
@@ -634,18 +618,14 @@ def _has_lark_cli_config(settings: Settings) -> bool:
     )
 
 
-def _parse_record_id(stdout: str) -> str:
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
+def _parse_record_id(data: dict[str, Any] | None) -> str:
+    if not data:
         return ""
     return str(data.get("record_id") or data.get("id") or "")
 
 
-def _parse_lark_record_id(stdout: str) -> str:
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
+def _parse_lark_record_id(data: dict[str, Any] | None) -> str:
+    if not data:
         return ""
     record_ids = data.get("data", {}).get("record", {}).get("record_id_list") or []
     if record_ids:

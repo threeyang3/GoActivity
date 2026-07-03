@@ -1,6 +1,7 @@
 import json
 import logging
 import contextlib
+import time as _time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,10 @@ from app.utils.time import utcnow, parse_to_epoch
 
 logger = logging.getLogger(__name__)
 
+# fetch_articles 连接失败重试参数
+FETCH_RETRY_MAX = 3
+FETCH_RETRY_DELAY = 3  # 秒
+
 
 class ArticleService:
     def __init__(self, db: Session) -> None:
@@ -31,6 +36,32 @@ class ArticleService:
     def ingest_we_mp_rss_payload(self, payload: dict) -> dict:
         data = normalize_payload(payload)
         return self._ingest_normalized_payload(data, payload)
+
+    def _fetch_articles_with_retry(self, client: WeMpRssClient, **kwargs) -> list[dict]:
+        """带重试的 fetch_articles 调用（连接错误、超时、HTTP 502/503/504）。"""
+        import requests as _requests
+        for attempt in range(FETCH_RETRY_MAX):
+            try:
+                return client.fetch_articles(**kwargs)
+            except (_requests.ConnectionError, _requests.Timeout) as e:
+                if attempt < FETCH_RETRY_MAX - 1:
+                    logger.warning(
+                        "fetch_articles connection failed (attempt %d/%d): %s",
+                        attempt + 1, FETCH_RETRY_MAX, e,
+                    )
+                    _time.sleep(FETCH_RETRY_DELAY)
+                else:
+                    raise
+            except _requests.HTTPError as e:
+                status_code = e.response.status_code if e.response is not None else 0
+                if status_code in (502, 503, 504) and attempt < FETCH_RETRY_MAX - 1:
+                    logger.warning(
+                        "fetch_articles HTTP %d (attempt %d/%d), retrying...",
+                        status_code, attempt + 1, FETCH_RETRY_MAX,
+                    )
+                    _time.sleep(FETCH_RETRY_DELAY)
+                else:
+                    raise
 
     def fetch_candidates(
         self,
@@ -49,7 +80,8 @@ class ArticleService:
         candidates: list[dict] = []
         page_offset = offset
         while len(candidates) < limit:
-            page = client.fetch_articles(
+            page = self._fetch_articles_with_retry(
+                client,
                 limit=page_size,
                 offset=page_offset,
                 has_content=not include_no_content,
@@ -72,8 +104,10 @@ class ArticleService:
             if len(page) < page_size:
                 break
 
-        if candidates:
-            self._enrich_payloads_parallel(client, candidates)
+        if not candidates:
+            return []
+
+        self._enrich_payloads_parallel(client, candidates)
 
         return candidates
 

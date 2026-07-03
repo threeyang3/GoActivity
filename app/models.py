@@ -74,6 +74,7 @@ class Event(Base):
     event_time_status: Mapped[str] = mapped_column(String(64), default="unknown")
     retention_decision: Mapped[str] = mapped_column(String(64), default="keep")
     user_keep: Mapped[bool] = mapped_column(Boolean, default=False)
+    user_participate: Mapped[bool] = mapped_column(Boolean, default=False)
     tags: Mapped[str] = mapped_column(Text, default="[]")
     poster_images: Mapped[str] = mapped_column(Text, default="[]")
     cover_image: Mapped[str] = mapped_column(Text, default="")
@@ -86,6 +87,7 @@ class Event(Base):
     dedup_key: Mapped[str] = mapped_column(String(255), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # 演出信息
     performance_type: Mapped[str] = mapped_column(String(128), default="")

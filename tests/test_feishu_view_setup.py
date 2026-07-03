@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 from app.db import init_db
 from app.services.feishu_view_setup import (
     FeishuViewSetupService,
@@ -9,14 +7,14 @@ from app.services.feishu_view_setup import (
 from app.utils.lark_cli import is_windows_cmd_launcher, resolve_lark_cli_run_js
 
 
-def test_view_configs_cover_all_13_views() -> None:
-    """视图配置覆盖 13 个视图"""
-    assert len(VIEW_CONFIGS) == 13
+def test_view_configs_cover_all_views() -> None:
+    """视图配置覆盖 11 个视图"""
+    assert len(VIEW_CONFIGS) == 11
     names = [v.name for v in VIEW_CONFIGS]
     expected = [
-        "活动日历", "待审核看板", "活动总表", "用户置顶", "招新与志愿者",
-        "讲座", "演出与放映", "比赛与征稿", "失败排查", "已过期", "待确认时间",
-        "按公众号分组", "本周活动",
+        "本周活动", "活动总表", "用户置顶", "活动日历", "待审核看板",
+        "分类浏览", "按公众号分组", "失败排查", "已过期", "待确认时间",
+        "活动归档",
     ]
     assert names == expected
 
@@ -27,22 +25,14 @@ def test_view_configs_have_correct_types() -> None:
     assert type_map["活动日历"] == "calendar"
     assert type_map["待审核看板"] == "kanban"
     # 其余都是 grid
-    for name in ["活动总表", "用户置顶", "招新与志愿者", "讲座", "演出与放映", "比赛与征稿", "失败排查", "已过期", "待确认时间", "按公众号分组", "本周活动"]:
+    for name in ["本周活动", "活动总表", "用户置顶", "分类浏览", "按公众号分组", "失败排查", "已过期", "待确认时间"]:
         assert type_map[name] == "grid", f"{name} should be grid"
 
 
 def test_view_configs_have_filter_where_expected() -> None:
-    """需要过滤的视图都有 filter_config"""
-    views_with_filter = {
-        "活动日历", "待审核看板", "用户置顶", "招新与志愿者", "讲座",
-        "演出与放映", "比赛与征稿", "失败排查", "已过期", "待确认时间",
-        "活动总表", "按公众号分组", "本周活动",
-    }
+    """所有视图都有 filter_config"""
     for config in VIEW_CONFIGS:
-        if config.name in views_with_filter:
-            assert config.filter_config is not None, f"{config.name} should have filter"
-        else:
-            assert config.filter_config is None, f"{config.name} should not have filter"
+        assert config.filter_config is not None, f"{config.name} should have filter"
 
 
 def test_view_configs_have_sort_where_expected() -> None:
@@ -68,12 +58,9 @@ def test_setup_view_updates_existing(monkeypatch) -> None:
 
     # Mock lark-cli
     def mock_run(command, **kwargs):
-        cmd_str = " ".join(command)
-        if "+view-set-filter" in cmd_str or "+view-set-sort" in cmd_str or "+view-set-visible-fields" in cmd_str:
-            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
-        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+        return {"return_code": 0, "stdout": "{}", "stderr": "", "data": {}}
 
-    monkeypatch.setattr("app.services.feishu_view_setup.subprocess.run", mock_run)
+    monkeypatch.setattr("app.services.feishu_view_setup.run_cli_command", mock_run)
 
     config = ViewConfig(
         name="活动总表",
@@ -96,18 +83,17 @@ def test_setup_view_creates_new(monkeypatch) -> None:
 
     def mock_run(command, **kwargs):
         call_log.append((" ".join(command[:5]), command))
-        # 根据命令返回不同结果
         cmd_str = " ".join(command)
         if "+view-create" in cmd_str:
-            return SimpleNamespace(
-                returncode=0,
-                stdout='{"data":{"view":{"view_id":"view-new"}}}',
-                stderr="",
-            )
-        # 其他命令（set-filter, set-sort, etc.）
-        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+            return {
+                "return_code": 0,
+                "stdout": '{"data":{"view":{"view_id":"view-new"}}}',
+                "stderr": "",
+                "data": {"data": {"view": {"view_id": "view-new"}}},
+            }
+        return {"return_code": 0, "stdout": "{}", "stderr": "", "data": {}}
 
-    monkeypatch.setattr("app.services.feishu_view_setup.subprocess.run", mock_run)
+    monkeypatch.setattr("app.services.feishu_view_setup.run_cli_command", mock_run)
 
     config = ViewConfig(
         name="测试视图",
@@ -133,21 +119,22 @@ def test_setup_all_views_is_idempotent(monkeypatch) -> None:
     def mock_run(command, **kwargs):
         cmd_str = " ".join(command)
         if "+view-list" in cmd_str:
-            # 返回已存在的视图
-            return SimpleNamespace(
-                returncode=0,
-                stdout='{"data":{"views":[{"name":"活动总表","id":"v1"},{"name":"讲座","id":"v2"}]}}',
-                stderr="",
-            )
+            return {
+                "return_code": 0,
+                "stdout": '{"data":{"views":[{"name":"活动总表","id":"v1"},{"name":"讲座","id":"v2"}]}}',
+                "stderr": "",
+                "data": {"data": {"views": [{"name": "活动总表", "id": "v1"}, {"name": "讲座", "id": "v2"}]}},
+            }
         if "+view-create" in cmd_str:
-            return SimpleNamespace(
-                returncode=0,
-                stdout='{"data":{"view":{"view_id":"v-new"}}}',
-                stderr="",
-            )
-        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+            return {
+                "return_code": 0,
+                "stdout": '{"data":{"view":{"view_id":"v-new"}}}',
+                "stderr": "",
+                "data": {"data": {"view": {"view_id": "v-new"}}},
+            }
+        return {"return_code": 0, "stdout": "{}", "stderr": "", "data": {}}
 
-    monkeypatch.setattr("app.services.feishu_view_setup.subprocess.run", mock_run)
+    monkeypatch.setattr("app.services.feishu_view_setup.run_cli_command", mock_run)
 
     # 只测试 3 个视图
     configs = [
@@ -168,9 +155,9 @@ def test_setup_view_handles_lark_cli_error(monkeypatch) -> None:
     service = FeishuViewSetupService()
 
     def mock_run(command, **kwargs):
-        return SimpleNamespace(returncode=1, stdout="", stderr="permission denied")
+        return {"return_code": 1, "stdout": "", "stderr": "permission denied", "data": None}
 
-    monkeypatch.setattr("app.services.feishu_view_setup.subprocess.run", mock_run)
+    monkeypatch.setattr("app.services.feishu_view_setup.run_cli_command", mock_run)
 
     config = ViewConfig(name="失败视图", type="grid")
     result = service.setup_view(config, {})

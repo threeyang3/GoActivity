@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 from app.db import SessionLocal, init_db
 from app.models import Article, Event, SyncLog
 from app.services.feishu import (
@@ -29,10 +27,10 @@ def test_feishu_client_retries_until_success(monkeypatch) -> None:
     def fake_run(*args, **kwargs):
         calls["count"] += 1
         if calls["count"] < 3:
-            return SimpleNamespace(returncode=1, stdout="", stderr="temporary failure")
-        return SimpleNamespace(returncode=0, stdout='{"record_id":"rec-123"}', stderr="")
+            return {"return_code": 1, "stdout": "", "stderr": "temporary failure", "data": None}
+        return {"return_code": 0, "stdout": '{"record_id":"rec-123"}', "stderr": "", "data": {"record_id": "rec-123"}}
 
-    monkeypatch.setattr("app.services.feishu.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.feishu.run_cli_command", fake_run)
     monkeypatch.setattr("app.services.feishu.time.sleep", lambda _: None)
 
     client = FeishuCLIClient(db)
@@ -274,13 +272,14 @@ def test_lark_cli_client_parses_record_id(monkeypatch) -> None:
     db.commit()
 
     def fake_run(*args, **kwargs):
-        return SimpleNamespace(
-            returncode=0,
-            stdout='{"ok":true,"data":{"record":{"record_id_list":["rec-lark-123"]}}}',
-            stderr="",
-        )
+        return {
+            "return_code": 0,
+            "stdout": '{"ok":true,"data":{"record":{"record_id_list":["rec-lark-123"]}}}',
+            "stderr": "",
+            "data": {"ok": True, "data": {"record": {"record_id_list": ["rec-lark-123"]}}},
+        }
 
-    monkeypatch.setattr("app.services.feishu.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.feishu.run_cli_command", fake_run)
 
     client = LarkCLIClient(db)
     settings = client.settings
@@ -337,14 +336,15 @@ def test_lark_cli_client_uploads_poster_attachments(monkeypatch) -> None:
     def fake_run(command, **kwargs):
         calls.append(command)
         if "+record-upsert" in command:
-            return SimpleNamespace(
-                returncode=0,
-                stdout='{"ok":true,"data":{"record":{"record_id_list":["rec-lark-attach"]}}}',
-                stderr="",
-            )
-        return SimpleNamespace(returncode=0, stdout='{"ok":true}', stderr="")
+            return {
+                "return_code": 0,
+                "stdout": '{"ok":true,"data":{"record":{"record_id_list":["rec-lark-attach"]}}}',
+                "stderr": "",
+                "data": {"ok": True, "data": {"record": {"record_id_list": ["rec-lark-attach"]}}},
+            }
+        return {"return_code": 0, "stdout": '{"ok":true}', "stderr": "", "data": {"ok": True}}
 
-    monkeypatch.setattr("app.services.feishu.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.feishu.run_cli_command", fake_run)
 
     client = LarkCLIClient(db)
     settings = client.settings

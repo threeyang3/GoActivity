@@ -47,10 +47,10 @@ def health() -> dict[str, Any]:
     else:
         checks["vision_api"] = {"status": "not_configured"}
 
-    # 4. we-mp-rss 连通性
+    # 4. we-mp-rss 连通性（使用 /api/docs 端点，we-mp-rss 无独立 /health）
     try:
         start = time.time()
-        resp = http_requests.get(f"{settings.we_mp_rss_base_url}/health", timeout=2)
+        resp = http_requests.get(f"{settings.we_mp_rss_base_url}/api/docs", timeout=2)
         elapsed_ms = int((time.time() - start) * 1000)
         if resp.status_code == 200:
             checks["we_mp_rss"] = {"status": "ok", "latency_ms": elapsed_ms}

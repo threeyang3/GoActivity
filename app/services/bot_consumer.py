@@ -15,7 +15,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.services.bot_handler import BotHandler
 from app.services.feishu_messenger import FeishuMessenger
-from app.utils.lark_cli import build_lark_cli_command
+from app.utils.lark_cli import build_lark_cli_command, run_cli_command
 
 logger = logging.getLogger(__name__)
 
@@ -209,17 +209,9 @@ class BotEventConsumer:
         ]
 
         try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-                check=False,
-            )
-            if result.returncode != 0:
-                logger.error("Bot reply failed: %s", result.stderr or result.stdout)
+            result = run_cli_command(command, timeout=30)
+            if result["return_code"] != 0:
+                logger.error("Bot reply failed: %s", result["stderr"] or result["stdout"])
                 # 回退到直接发送
                 messenger.send_message(content, chat_id=chat_id, msg_type="markdown")
         except Exception as exc:

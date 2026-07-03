@@ -4,11 +4,23 @@
 
 ## 前置条件
 
-- we-mp-rss 服务已启动并运行
-- GoActivity 服务已启动
-- 已获取 we-mp-rss 的 Access Key 和 Secret Key
+- we-mp-rss 服务已启动并运行（端口 8001）
+- GoActivity 服务已启动（端口 8000）
+- 已获取 we-mp-rss 的 Access Key 和 Secret Key（配置在 `.env` 中）
 
-## 步骤一：在 we-mp-rss 中订阅公众号
+## 方式一：通过 GoActivity Web 管理页面（推荐）
+
+1. 访问 `http://localhost:8000/`
+2. 滚动到「公众号管理」区块
+3. 在搜索框输入公众号名称，点击「搜索」
+4. 在搜索结果中点击「添加」按钮
+5. 系统自动订阅并开始拉取历史文章
+
+添加完成后，可在列表中：
+- 点击「刷新文章」手动触发该公众号的文章更新
+- 点击「删除」取消订阅
+
+## 方式二：通过 we-mp-rss 管理界面
 
 1. 访问 we-mp-rss 管理界面：`http://localhost:8001`
 2. 登录后进入「公众号管理」页面
@@ -16,7 +28,7 @@
 4. 输入公众号名称或微信号
 5. 等待 we-mp-rss 完成订阅和授权
 
-## 步骤二：配置 GoActivity 拉取
+## 步骤三：确认配置
 
 在 `.env` 文件中确认以下配置：
 
@@ -27,7 +39,7 @@ WE_MP_RSS_ACCESS_KEY=WK...
 WE_MP_RSS_SECRET_KEY=SK...
 ```
 
-## 步骤三：拉取历史文章
+## 步骤四：拉取历史文章
 
 新订阅的公众号需要拉取历史文章：
 
@@ -39,14 +51,14 @@ curl -X POST "http://localhost:8000/sync/we-mp-rss/articles?limit=50"
 curl -X POST "http://localhost:8000/sync/we-mp-rss/rss/all?limit=50"
 ```
 
-## 步骤四：验证抽取结果
+## 步骤五：验证抽取结果
 
 1. 访问 Web 管理后台：`http://localhost:8000/`
 2. 查看「活动列表」中的新活动
 3. 检查抽取结果是否正确
 4. 如有错误，可手动触发重新抽取
 
-## 步骤五：同步到飞书
+## 步骤六：同步到飞书
 
 ```bash
 # 手动触发同步

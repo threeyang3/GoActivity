@@ -33,9 +33,10 @@ class EventStatus:
     EXPIRED_HIDDEN = "expired_hidden"
     FILTERED_OUT = "filtered_out"
     NEEDS_IMAGE_RETRY = "needs_image_retry"
+    ARCHIVED = "archived"
 
     # 需要排除的状态（不显示在活动列表中）
-    TERMINAL_STATUSES = {IGNORED_NON_EVENT, EXPIRED_HIDDEN, FILTERED_OUT}
+    TERMINAL_STATUSES = {IGNORED_NON_EVENT, EXPIRED_HIDDEN, FILTERED_OUT, ARCHIVED}
 
     # 已同步到飞书的状态
     SYNCED_STATUSES = {SYNCED, EXTRACTED}
@@ -54,6 +55,8 @@ class RetentionDecision:
     DROP_PAST_EVENT = "drop_past_event"
     SKIP_OLDER_THAN_30_DAYS = "skip_older_than_30_days"
     SKIP_OLDER_THAN_60_DAYS = "skip_older_than_60_days"
+    AUTO_ARCHIVED = "auto_archived"
+    USER_ARCHIVED = "user_archived"
 
 
 # ---------------------------------------------------------------------------

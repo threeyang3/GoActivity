@@ -123,6 +123,7 @@ FEISHU_BOT_APP_ID=cli_xxx
 cd we-mp-rss
 conda activate we-mp-rss
 pip install -r requirements.txt
+playwright install chromium
 copy config.example.yaml config.yaml
 python main.py -job True -init True
 ```
@@ -147,7 +148,7 @@ http://localhost:8001
 - 提供配置自检、同步日志、同步任务状态接口，便于排障。
 - 提供结构化日报/周报（按时间筛选、分类统计、活动列表），支持发送到飞书群/用户。
 - 自动同步服务：定时从 we-mp-rss 拉取新文章、Vision 抽取、同步到飞书（每小时）。
-- 飞书视图自动创建/更新（13 个视图，支持过滤、排序、分组）。
+- 飞书视图自动创建/更新（11 个视图，支持过滤、排序、分组）。
 - 事件去重：基于标题+时间+地点的 SHA-256 去重键，避免同一活动重复入库。
 - 抽取后校验：自动修正非法分类、超范围置信度、不合理时间。
 - 图片过滤：自动排除装饰性图片（<50KB、<80px、极端比例），只保留有效海报图。
@@ -163,6 +164,8 @@ http://localhost:8001
 - SQLite WAL 模式：提升并发读写性能。
 - 数据库索引：`status`、`start_time`、`feishu_record_id` 字段索引。
 - 公众号添加指南：`docs/adding-accounts.md`。
+- 活动归档：手动/自动归档过期活动，清除重数据（图片、markdown、OCR），保留基本信息用于追溯。用户标记"参与"的活动不被自动归档。
+- 数据管道状态面板：管理页面顶部显示 we-mp-rss 状态、最新入库时间、最后同步时间、自动同步配置、待同步数、归档统计。
 
 ## 主要接口
 
@@ -186,6 +189,9 @@ http://localhost:8001
 - `POST /events/{event_id}/extract`
 - `POST /events/{event_id}/sync-feishu`
 - `POST /events/{event_id}/keep` — 置顶/取消置顶活动
+- `POST /events/{event_id}/participate` — 标记/取消参与（阻止自动归档）
+- `POST /events/{event_id}/archive` — 手动归档（清除重数据，保留基本信息）
+- `POST /events/{event_id}/unarchive` — 取消归档
 - `POST /events/cleanup-expired` — 批量清理过期活动
 - `POST /events/refilter-images` — 重新过滤所有已同步事件的海报图片（排除装饰性图片，更新飞书附件）
 - `POST /setup/feishu-views` — 创建/更新飞书视图（幂等）
@@ -201,6 +207,12 @@ http://localhost:8001
 - `GET /dashboard/sync-logs` — 仪表板同步日志
 - `GET /dashboard/sync-runs` — 仪表板同步运行记录
 - `GET /dashboard/feishu-link` — 飞书多维表格链接配置
+- `GET /dashboard/pipeline-status` — 数据管道状态（we-mp-rss 状态、最新入库、最后同步、归档统计）
+- `GET /accounts` — 列出已订阅公众号
+- `GET /accounts/search/{kw}` — 搜索公众号（微信搜索）
+- `POST /accounts` — 添加公众号（代理到 we-mp-rss）
+- `DELETE /accounts/{mp_id}` — 删除公众号
+- `GET /accounts/update/{mp_id}` — 触发公众号文章更新
 
 ## 真实接入配置
 

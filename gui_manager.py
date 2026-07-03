@@ -39,6 +39,11 @@ AUTOSTART_REG_NAME_RSS = "WeMpRss"
 
 def _find_rss_python():
     """查找 we-mp-rss 的 Python 解释器"""
+    # 优先查找 conda 环境
+    conda_python = Path(r"D:\miniconda3\envs\we-mp-rss\python.exe")
+    if conda_python.exists():
+        return str(conda_python)
+    # 其次查找本地 venv
     for sub in (".venv", "venv"):
         p = RSS_DIR / sub / "Scripts" / "python.exe"
         if p.exists():
@@ -59,19 +64,33 @@ def _lighten(hex_color, factor=0.2):
 class GoActivityTray:
     """GoActivity 系统托盘管理器"""
 
+    # 自动重启参数
+    MAX_AUTO_RESTARTS = 3
+    RESTART_BACKOFF_BASE = 5  # 秒
+
     def __init__(self):
         self.process = None
         self.running = False
         self.service_status = "unknown"
+        self._restart_count = 0  # GoActivity 连续重启计数
+
         self.rss_process = None
         self.rss_running = False
         self.rss_service_status = "unknown"
+        self._rss_restart_count = 0  # WeRSS 连续重启计数
+
         self.rss_python = _find_rss_python()
         self.icon = None
         self._status_window = None  # 状态窗口（独立 Toplevel）
+        self._user_stopped = False  # 用户主动停止标志
+        self._rss_user_stopped = False
 
         # 创建日志目录
         os.makedirs('logs', exist_ok=True)
+
+        # 子进程日志文件（带轮转）
+        self._service_log = self._open_rotating_log('logs/goactivity_service.log')
+        self._rss_log = self._open_rotating_log('logs/werss_service.log')
 
         # 创建图标
         self.icon_image = self.create_icon()
@@ -79,6 +98,19 @@ class GoActivityTray:
         # 创建隐藏的 tkinter 根窗口（必须在主线程）
         self.root = tk.Tk()
         self.root.withdraw()  # 隐藏根窗口
+
+    @staticmethod
+    def _open_rotating_log(path: str, max_bytes: int = 5 * 1024 * 1024):
+        """打开日志文件，超过 max_bytes 时轮转为 .old。返回文件句柄。"""
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > max_bytes:
+                old = path + '.old'
+                if os.path.exists(old):
+                    os.remove(old)
+                os.rename(path, old)
+        except OSError:
+            pass
+        return open(path, 'a', encoding='utf-8')
 
     def create_icon(self, color='gray', rss_color='gray'):
         """创建托盘图标 — 深绿底 + 双状态指示灯"""
@@ -179,7 +211,6 @@ class GoActivityTray:
             self.service_status = "running"
             return
 
-        # 创建启动脚本
         cmd = [
             sys.executable,
             'start_service.py',
@@ -189,21 +220,20 @@ class GoActivityTray:
         ]
 
         try:
-            # 启动服务进程
             self.process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=self._service_log,
+                stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
             )
             self.running = True
+            self._user_stopped = False
 
-            # 等待服务启动
-            time.sleep(2)
-
-            # 检查服务是否启动成功
-            health = self.check_service_health()
-            if health == "ok":
+            # 轮询健康检查（最多 30 秒）
+            ok = self._wait_for_health(
+                self.check_service_health, max_retries=15, interval=2, label="GoActivity"
+            )
+            if ok:
                 self.update_icon('green')
                 self.service_status = "running"
                 self.show_notification("GoActivity", "服务已启动")
@@ -219,6 +249,8 @@ class GoActivityTray:
 
     def stop_service(self):
         """停止服务"""
+        self._user_stopped = True
+        self._restart_count = 0
         if not self.running:
             return
 
@@ -263,6 +295,55 @@ class GoActivityTray:
         except Exception:
             return "unreachable"
 
+    def _wait_for_health(self, check_fn, max_retries=15, interval=2, label="service"):
+        """轮询健康检查直到成功或超时。返回 True 表示健康。"""
+        for i in range(max_retries):
+            health = check_fn()
+            if health == "ok":
+                if i > 0:
+                    print(f"[gui_manager] {label} health check passed after {i+1} attempts")
+                return True
+            if i < max_retries - 1:
+                time.sleep(interval)
+        print(f"[gui_manager] {label} health check failed after {max_retries} attempts")
+        return False
+
+    def _restart_with_backoff(self, service_type):
+        """指数退避自动重启。返回 True 表示重启成功。
+
+        start_service/start_rss_service 内部已包含健康检查轮询（最多 30 秒），
+        此方法只需管理退避等待和重启计数。
+        """
+        if service_type == "goactivity":
+            count = self._restart_count
+            if count >= self.MAX_AUTO_RESTARTS:
+                return False
+            delay = self.RESTART_BACKOFF_BASE * (2 ** count)
+            self._restart_count = count + 1
+            time.sleep(delay)
+            if self._user_stopped:
+                return False
+            self.start_service()
+            ok = self.service_status == "running"
+            if ok:
+                self._restart_count = 0
+            return ok
+        elif service_type == "werss":
+            count = self._rss_restart_count
+            if count >= self.MAX_AUTO_RESTARTS:
+                return False
+            delay = self.RESTART_BACKOFF_BASE * (2 ** count)
+            self._rss_restart_count = count + 1
+            time.sleep(delay)
+            if self._rss_user_stopped:
+                return False
+            self.start_rss_service()
+            ok = self.rss_service_status == "running"
+            if ok:
+                self._rss_restart_count = 0
+            return ok
+        return False
+
     def start_rss_service(self):
         """启动 we-mp-rss 服务"""
         if self.rss_running:
@@ -270,7 +351,7 @@ class GoActivityTray:
 
         if self._check_rss_port():
             self.rss_running = True
-            self.update_icon('green')
+            self.update_icon(rss_color='green')
             self.rss_service_status = "running"
             return
 
@@ -280,18 +361,21 @@ class GoActivityTray:
             self.rss_process = subprocess.Popen(
                 cmd,
                 cwd=str(RSS_DIR),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=self._rss_log,
+                stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
             )
             self.rss_running = True
+            self._rss_user_stopped = False
 
-            time.sleep(3)
-
-            health = self.check_rss_health()
-            if health == "ok":
+            # 轮询健康检查（最多 30 秒，we-mp-rss 初始化可能较慢）
+            ok = self._wait_for_health(
+                self.check_rss_health, max_retries=15, interval=2, label="WeRSS"
+            )
+            if ok:
                 self.update_icon(rss_color='green')
                 self.rss_service_status = "running"
+                self._rss_restart_count = 0
                 self.show_notification("WeRSS", "服务已启动")
             else:
                 self.update_icon(rss_color='yellow')
@@ -304,6 +388,8 @@ class GoActivityTray:
 
     def stop_rss_service(self):
         """停止 we-mp-rss 服务"""
+        self._rss_user_stopped = True
+        self._rss_restart_count = 0
         if not self.rss_running:
             return
 
@@ -328,47 +414,124 @@ class GoActivityTray:
         self.start_rss_service()
 
     def monitor_rss_service(self):
-        """监控 we-mp-rss 服务状态"""
+        """监控 we-mp-rss 服务状态，崩溃时自动重启"""
+        consecutive_health_failures = 0
         while self.rss_running:
+            # 进程已退出
             if self.rss_process and self.rss_process.poll() is not None:
+                exit_code = self.rss_process.returncode
                 self.rss_running = False
+                self.rss_process = None
                 self.update_icon(rss_color='red')
                 self.rss_service_status = "stopped"
-                self.show_notification("WeRSS", "服务意外停止")
-                break
+                if self._rss_user_stopped:
+                    break
+                # 自动重启
+                ok = self._restart_with_backoff("werss")
+                if ok:
+                    self.rss_running = True
+                    self.show_notification("WeRSS", f"服务已自动重启（原 exit={exit_code}）")
+                    consecutive_health_failures = 0
+                    continue
+                else:
+                    self.show_notification("WeRSS", f"服务崩溃，自动重启失败（exit={exit_code}）")
+                    break
 
             health = self.check_rss_health()
             if health == "ok":
+                consecutive_health_failures = 0
                 self.update_icon(rss_color='green')
                 self.rss_service_status = "running"
             else:
-                self.update_icon(rss_color='red')
-                self.rss_service_status = "unreachable"
+                consecutive_health_failures += 1
+                # 连续 3 次健康检查失败（30 秒），视为服务异常
+                if consecutive_health_failures >= 3:
+                    self.update_icon(rss_color='red')
+                    self.rss_service_status = "unreachable"
+                    if not self._rss_user_stopped and consecutive_health_failures == 3:
+                        # 尝试自动重启
+                        self.rss_running = False
+                        if self.rss_process:
+                            try:
+                                self.rss_process.kill()
+                            except Exception:
+                                pass
+                            self.rss_process = None
+                        ok = self._restart_with_backoff("werss")
+                        if ok:
+                            self.rss_running = True
+                            self.show_notification("WeRSS", "服务无响应，已自动重启")
+                            consecutive_health_failures = 0
+                            continue
+                        else:
+                            self.show_notification("WeRSS", "服务无响应，自动重启失败")
+                            break
+                else:
+                    self.update_icon(rss_color='yellow')
+                    self.rss_service_status = "degraded"
 
             time.sleep(10)
 
     def monitor_service(self):
-        """监控服务状态"""
+        """监控服务状态，崩溃时自动重启"""
+        consecutive_health_failures = 0
         while self.running:
+            # 进程已退出
             if self.process and self.process.poll() is not None:
-                # 服务意外停止
+                exit_code = self.process.returncode
                 self.running = False
+                self.process = None
                 self.update_icon('red')
                 self.service_status = "stopped"
-                self.show_notification("GoActivity", "服务意外停止")
-                break
+                if self._user_stopped:
+                    break
+                # 自动重启
+                ok = self._restart_with_backoff("goactivity")
+                if ok:
+                    self.running = True
+                    self.show_notification("GoActivity", f"服务已自动重启（原 exit={exit_code}）")
+                    consecutive_health_failures = 0
+                    continue
+                else:
+                    self.show_notification("GoActivity", f"服务崩溃，自动重启失败（exit={exit_code}）")
+                    break
 
-            # 定期检查健康状态
             health = self.check_service_health()
             if health == "ok":
+                consecutive_health_failures = 0
                 self.update_icon('green')
                 self.service_status = "running"
             elif health == "degraded":
+                consecutive_health_failures = 0
                 self.update_icon('yellow')
                 self.service_status = "degraded"
             else:
-                self.update_icon('red')
-                self.service_status = "unreachable"
+                consecutive_health_failures += 1
+                # 连续 3 次健康检查失败（30 秒），视为服务异常
+                if consecutive_health_failures >= 3:
+                    self.update_icon('red')
+                    self.service_status = "unreachable"
+                    if not self._user_stopped and consecutive_health_failures == 3:
+                        # 尝试自动重启
+                        self.running = False
+                        if self.process:
+                            try:
+                                self.process.kill()
+                            except Exception:
+                                pass
+                            self.process = None
+                        ok = self._restart_with_backoff("goactivity")
+                        if ok:
+                            self.running = True
+                            self.show_notification("GoActivity", "服务无响应，已自动重启")
+                            consecutive_health_failures = 0
+                            continue
+                        else:
+                            self.show_notification("GoActivity", "服务无响应，自动重启失败")
+                            break
+                else:
+                    self.update_icon('yellow')
+                    self.service_status = "degraded"
 
             time.sleep(10)
 
@@ -419,17 +582,22 @@ class GoActivityTray:
         webbrowser.open(f'http://{RSS_HOST}:{RSS_PORT}/')
 
     def trigger_sync(self):
-        """触发同步"""
+        """触发同步（非阻塞，后台执行）"""
         import urllib.request
         try:
             url = f"http://{SERVICE_HOST}:{SERVICE_PORT}/sync/auto"
             req = urllib.request.Request(url, method='POST')
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
-                msg = f"同步完成！\n拉取文章: {data.get('articles_fetched', 0)}\n同步事件: {data.get('events_synced', 0)}\n失败: {data.get('events_failed', 0)}"
-                self.show_notification("GoActivity", msg)
+                status = data.get("status", "")
+                if status == "started":
+                    self.show_notification("GoActivity", "同步已启动，请等待完成…")
+                elif status == "already_running":
+                    self.show_notification("GoActivity", "同步正在进行中，请稍候")
+                else:
+                    self.show_notification("GoActivity", f"同步状态: {status}")
         except Exception as e:
-            self.show_notification("GoActivity", f"同步失败: {e}")
+            self.show_notification("GoActivity", f"触发同步失败: {e}")
 
     def send_daily_report(self):
         """发送日报"""
@@ -623,8 +791,16 @@ class GoActivityTray:
 
     def quit_app(self, icon=None, item=None):
         """退出应用（线程安全）"""
+        self._user_stopped = True
+        self._rss_user_stopped = True
         self.stop_service()
         self.stop_rss_service()
+        # 关闭日志文件句柄
+        for fh in (self._service_log, self._rss_log):
+            try:
+                fh.close()
+            except Exception:
+                pass
         if self.icon:
             self.icon.stop()
         # 调度到主线程销毁 tkinter 并退出 mainloop

@@ -3,13 +3,12 @@
 通过 lark-cli 发送消息到飞书群聊。
 """
 
-import json
 import logging
 import subprocess
 from typing import Any
 
 from app.config import get_settings
-from app.utils.lark_cli import build_lark_cli_command
+from app.utils.lark_cli import build_lark_cli_command, run_cli_command
 
 logger = logging.getLogger(__name__)
 
@@ -66,25 +65,17 @@ class FeishuMessenger:
 
         target = chat_id or user_id
         try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-                check=False,
-            )
+            cli_result = run_cli_command(command, timeout=30)
 
-            if result.returncode != 0:
-                logger.error("Failed to send message to %s: %s", target, result.stderr or result.stdout)
+            if cli_result["return_code"] != 0:
+                logger.error("Failed to send message to %s: %s", target, cli_result["stderr"] or cli_result["stdout"])
                 return {
                     "ok": False,
-                    "error": result.stderr or result.stdout,
-                    "return_code": result.returncode,
+                    "error": cli_result["stderr"] or cli_result["stdout"],
+                    "return_code": cli_result["return_code"],
                 }
 
-            data = json.loads(result.stdout)
+            data = cli_result["data"] or {}
             return {
                 "ok": data.get("ok", False),
                 "message_id": data.get("data", {}).get("message_id", ""),
@@ -94,9 +85,6 @@ class FeishuMessenger:
         except subprocess.TimeoutExpired:
             logger.error("Timeout sending message to %s", target)
             return {"ok": False, "error": "timeout"}
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse response: %s", e)
-            return {"ok": False, "error": f"invalid response: {e}"}
         except Exception as e:
             logger.error("Unexpected error: %s", e)
             return {"ok": False, "error": str(e)}

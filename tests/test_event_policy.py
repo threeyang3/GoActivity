@@ -26,7 +26,7 @@ def test_event_policy_marks_past_announcement_for_removal() -> None:
     article = Article(
         article_id="article_policy_1",
         title="活动通知",
-        publish_time=str(int(now_shanghai().timestamp())),
+        publish_time=str(int((now_shanghai() - timedelta(days=10)).timestamp())),
         raw_markdown="活动通知正文",
         processed_markdown="活动通知正文",
     )
@@ -60,7 +60,7 @@ def test_feishu_adapter_updates_expired_event_status(monkeypatch) -> None:
     article = Article(
         article_id="article_policy_2",
         title="活动通知",
-        publish_time=str(int(now_shanghai().timestamp())),
+        publish_time=str(int((now_shanghai() - timedelta(days=10)).timestamp())),
         raw_markdown="活动通知正文",
         processed_markdown="活动通知正文",
     )

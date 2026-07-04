@@ -11,7 +11,10 @@ from app.models import Event
 from app.routes.helpers import event_to_out
 from app.schemas import (
     ArchiveResponse,
+    BatchRequest,
+    BatchResponse,
     CleanupExpiredResponse,
+    EventEditRequest,
     EventKeepResponse,
     EventOut,
     ExtractResponse,
@@ -20,9 +23,10 @@ from app.schemas import (
 )
 from app.services.archive_service import ArchiveService
 from app.services.event_extractor import EventExtractor
+from app.services.event_policy import EventPolicyService
 from app.services.feishu import FeishuAdapter
 from app.utils.constants import EventStatus
-from app.utils.jsonx import loads_list
+from app.utils.jsonx import dumps_list, loads_list
 
 router = APIRouter(tags=["events"])
 logger = logging.getLogger(__name__)
@@ -41,9 +45,105 @@ def list_events(
         query = query.filter(Event.status == status)
     else:
         query = query.filter(Event.status.notin_(EventStatus.TERMINAL_STATUSES))
+        # 默认排除已过期事件
+        query = query.filter(Event.event_time_status != "expired")
     offset = (page - 1) * page_size
     events = query.order_by(Event.created_at.desc()).offset(offset).limit(page_size).all()
     return [event_to_out(event) for event in events]
+
+
+@router.put("/events/{event_id}", response_model=EventOut)
+def edit_event(
+    event_id: str,
+    body: EventEditRequest,
+    db: Session = Depends(get_db),
+) -> EventOut:
+    """编辑活动信息（部分更新）。
+
+    仅更新请求体中提供的字段，更新后重新应用策略引擎。
+    如事件已同步到飞书，同步更新飞书记录。
+    """
+    event = (
+        db.query(Event)
+        .options(joinedload(Event.article))
+        .filter(Event.event_id == event_id)
+        .one_or_none()
+    )
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    update_fields = body.model_dump(exclude_unset=True)
+    for field, value in update_fields.items():
+        if field == "tags" and value is not None:
+            setattr(event, field, dumps_list(value))
+        else:
+            setattr(event, field, value)
+
+    # 重新应用策略引擎
+    EventPolicyService(db).apply(event)
+    db.flush()
+
+    # 如已同步到飞书，同步更新
+    if event.feishu_record_id:
+        try:
+            FeishuAdapter(db).sync_event(event)
+        except Exception as exc:
+            logger.warning("Feishu sync after edit failed for %s: %s", event.event_id, exc)
+
+    db.commit()
+    return event_to_out(event)
+
+
+@router.post("/events/batch", response_model=BatchResponse)
+def batch_events(
+    body: BatchRequest,
+    db: Session = Depends(get_db),
+) -> BatchResponse:
+    """批量操作活动：归档、同步飞书、置顶。"""
+    valid_actions = {"archive", "sync", "keep"}
+    if body.action not in valid_actions:
+        raise HTTPException(status_code=400, detail=f"Invalid action: {body.action}")
+
+    processed = 0
+    failed = 0
+    errors: list[str] = []
+
+    for event_id in body.event_ids:
+        try:
+            event = (
+                db.query(Event)
+                .options(joinedload(Event.article))
+                .filter(Event.event_id == event_id)
+                .one_or_none()
+            )
+            if not event:
+                errors.append(f"{event_id}: not found")
+                failed += 1
+                continue
+
+            if body.action == "archive":
+                if event.status == EventStatus.ARCHIVED:
+                    processed += 1
+                    continue
+                ArchiveService(db).archive_event(event, source="user")
+            elif body.action == "sync":
+                FeishuAdapter(db).sync_event(event)
+            elif body.action == "keep":
+                event.user_keep = True
+                if event.status in {EventStatus.EXPIRED_HIDDEN, EventStatus.FILTERED_OUT}:
+                    event.status = EventStatus.EXTRACTED
+                    event.retention_decision = "keep_user"
+
+            processed += 1
+        except Exception as exc:
+            logger.error("Batch %s failed for event %s: %s", body.action, event_id, exc)
+            errors.append(f"{event_id}: {exc}")
+            failed += 1
+
+    if body.action != "archive":
+        db.commit()
+
+    return BatchResponse(processed=processed, failed=failed, errors=errors)
 
 
 @router.post("/events/{event_id}/extract", response_model=ExtractResponse)
@@ -236,3 +336,81 @@ def refilter_images(db: Session = Depends(get_db)) -> dict[str, Any]:
         "failed": failed,
         "details": details,
     }
+
+
+@router.put("/events/{event_id}")
+def update_event(event_id: str, body: dict, db: Session = Depends(get_db)) -> dict:
+    """编辑活动信息。"""
+    from app.utils.time import utcnow
+
+    event = (
+        db.query(Event)
+        .options(joinedload(Event.article))
+        .filter(Event.event_id == event_id)
+        .one_or_none()
+    )
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    editable_fields = [
+        "title", "start_time", "end_time", "location", "category_1", "category_2",
+        "activity_kind", "speaker", "organizer", "summary",
+    ]
+    for field in editable_fields:
+        if field in body:
+            setattr(event, field, body[field] or "")
+
+    if "tags" in body and isinstance(body["tags"], list):
+        from app.utils.jsonx import dumps_list
+        event.tags = dumps_list(body["tags"])
+
+    from app.services.event_policy import EventPolicyService
+    EventPolicyService(db).apply(event)
+    event.updated_at = utcnow()
+    db.commit()
+
+    if event.feishu_record_id:
+        try:
+            FeishuAdapter(db).sync_event(event)
+        except Exception as exc:
+            logger.warning("Failed to sync updated event to Feishu: %s", exc)
+
+    return {"status": "updated", "event_id": event.event_id}
+
+
+@router.post("/events/batch")
+def batch_action(body: dict, db: Session = Depends(get_db)) -> dict:
+    """批量操作活动。"""
+    action = body.get("action", "")
+    event_ids = body.get("event_ids", [])
+
+    if not action or not event_ids:
+        raise HTTPException(status_code=400, detail="action and event_ids required")
+
+    processed = 0
+    failed = 0
+    errors = []
+
+    for eid in event_ids:
+        event = db.query(Event).filter(Event.event_id == eid).one_or_none()
+        if not event:
+            failed += 1
+            errors.append(f"{eid}: not found")
+            continue
+
+        try:
+            if action == "archive":
+                ArchiveService(db).archive_event(event, source="user")
+            elif action == "sync":
+                FeishuAdapter(db).sync_event(event)
+            elif action == "keep":
+                event.user_keep = True
+                db.commit()
+            else:
+                raise ValueError(f"Unknown action: {action}")
+            processed += 1
+        except Exception as exc:
+            failed += 1
+            errors.append(f"{eid}: {str(exc)[:80]}")
+
+    return {"processed": processed, "failed": failed, "errors": errors}

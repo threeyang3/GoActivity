@@ -194,3 +194,31 @@ class ParticipateResponse(BaseModel):
     event_id: str
     user_participate: bool
     status: str
+
+
+class EventEditRequest(BaseModel):
+    """活动编辑请求（部分更新）。"""
+    title: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    location: str | None = None
+    category_1: str | None = None
+    category_2: str | None = None
+    activity_kind: str | None = None
+    speaker: str | None = None
+    organizer: str | None = None
+    summary: str | None = None
+    tags: list[str] | None = None
+
+
+class BatchRequest(BaseModel):
+    """批量操作请求。"""
+    action: str  # "archive" | "sync" | "keep"
+    event_ids: list[str]
+
+
+class BatchResponse(BaseModel):
+    """批量操作响应。"""
+    processed: int
+    failed: int
+    errors: list[str] = Field(default_factory=list)

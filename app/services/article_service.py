@@ -338,24 +338,81 @@ class ArticleService:
     def _dedup_event(self, event: Event) -> Event:
         """检查 dedup_key 冲突，如果已有相同活动则合并。返回最终保留的 event。
 
+        两级匹配：
+        1. 精确匹配：dedup_key (title + time + location)
+        2. 模糊匹配：core_key (仅归一化标题)，同公众号内
+
         合并策略：保留已有 event，但从新 event 中补充缺失或更完整的字段。
         """
-        if not event.dedup_key:
-            return event
-        existing = (
-            self.db.query(Event)
-            .filter(
-                Event.dedup_key == event.dedup_key,
-                Event.event_id != event.event_id,
-                Event.status.notin_(EventStatus.TERMINAL_STATUSES),
+        from app.services.event_extractor import EventExtractor
+
+        # 阶段1：精确 dedup_key 匹配
+        existing = self._find_dedup_match(event, by_key="dedup_key")
+        if existing:
+            return self._merge_events(existing, event, match_type="exact")
+
+        # 阶段2：core_key 模糊匹配（同公众号内）
+        core_key = EventExtractor._generate_core_key(event)
+        if core_key:
+            existing = self._find_dedup_match(event, by_key="core_key")
+            if existing:
+                return self._merge_events(existing, event, match_type="fuzzy")
+
+        return event
+
+    def _find_dedup_match(self, event: Event, by_key: str):
+        """查找匹配的已有事件。"""
+        from app.services.event_extractor import EventExtractor
+
+        if by_key == "dedup_key":
+            key_value = event.dedup_key
+            if not key_value:
+                return None
+            return (
+                self.db.query(Event)
+                .filter(
+                    Event.dedup_key == key_value,
+                    Event.event_id != event.event_id,
+                    Event.status.notin_(EventStatus.TERMINAL_STATUSES),
+                )
+                .first()
             )
-            .first()
-        )
-        if not existing:
-            return event
+        elif by_key == "core_key":
+            # 在同公众号内用 时间+地点+标题 联合匹配
+            article = self.db.query(Article).filter(Article.article_id == event.article_id).first()
+            if not article or not article.mp_name:
+                return None
+            event_normalized = EventExtractor._normalize_title(event.title or "")
+            if not event_normalized or len(event_normalized) < 4:
+                return None
+            # 查找同公众号的事件
+            same_account_articles = (
+                self.db.query(Article.article_id)
+                .filter(Article.mp_name == article.mp_name)
+                .subquery()
+            )
+            candidates = (
+                self.db.query(Event)
+                .filter(
+                    Event.article_id.in_(self.db.query(same_account_articles.c.article_id)),
+                    Event.event_id != event.event_id,
+                    Event.status.notin_(EventStatus.TERMINAL_STATUSES),
+                )
+                .all()
+            )
+            for candidate in candidates:
+                if EventExtractor.is_same_event(
+                    event.title, event.start_time, event.location,
+                    candidate.title, candidate.start_time, candidate.location,
+                ):
+                    return candidate
+            return None
+
+    def _merge_events(self, existing: Event, new_event: Event, match_type: str) -> Event:
+        """将 new_event 合并到 existing event。"""
         logger.info(
-            "Dedup: event %s matches existing %s (key=%s), merging article %s",
-            event.event_id, existing.event_id, event.dedup_key, event.article_id,
+            "Dedup (%s): event %s matches existing %s, merging article %s",
+            match_type, new_event.event_id, existing.event_id, new_event.article_id,
         )
 
         # 合并策略：从新 event 补充缺失字段
@@ -365,25 +422,30 @@ class ArticleService:
             "lecture_topic", "speaker_title", "lecture_series",
             "competition_name", "competition_type", "deadline", "prize_info",
             "registration_url", "registration_deadline", "participant_limit",
+            "start_time", "end_time",  # 时间信息也合并
         ]
         for field in merge_fields:
             existing_val = getattr(existing, field, "") or ""
-            new_val = getattr(event, field, "") or ""
+            new_val = getattr(new_event, field, "") or ""
             if not existing_val and new_val:
                 setattr(existing, field, new_val)
 
         # 保留更高的置信度
-        if (event.confidence or 0) > (existing.confidence or 0):
-            existing.confidence = event.confidence
+        if (new_event.confidence or 0) > (existing.confidence or 0):
+            existing.confidence = new_event.confidence
 
-        # 更新 source_url
+        # 更新 source_url（优先用新文章的链接）
         if not existing.source_url:
-            article = self.db.query(Article).filter(Article.article_id == event.article_id).one_or_none()
+            article = self.db.query(Article).filter(Article.article_id == new_event.article_id).one_or_none()
             if article:
                 existing.source_url = article.url
 
+        # 重新生成 dedup_key（合并后可能有更完整的信息）
+        from app.services.event_extractor import EventExtractor
+        existing.dedup_key = EventExtractor._generate_dedup_key(existing)
+
         # 删除新创建的 event
-        self.db.delete(event)
+        self.db.delete(new_event)
         self.db.flush()
         return existing
 

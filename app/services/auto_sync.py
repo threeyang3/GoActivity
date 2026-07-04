@@ -50,6 +50,21 @@ class AutoSyncService:
         # 启动前恢复卡死的 SyncRun
         self._recover_stuck_runs()
 
+        # 启动时延迟运行一次自动归档（不依赖同步流程）
+        auto_archive_days = self.settings.auto_archive_expired_days
+        if auto_archive_days > 0:
+            from datetime import datetime, timedelta
+            self.scheduler.add_job(
+                self._run_archive_only,
+                "date",
+                run_date=datetime.now() + timedelta(seconds=30),
+                id="startup_archive",
+                name="启动时自动归档",
+                replace_existing=True,
+                misfire_grace_time=120,
+            )
+            logger.info("Scheduled startup auto-archive (delayed 30s)")
+
         sync_cron = self.settings.auto_sync_cron
         if sync_cron:
             try:
@@ -115,15 +130,15 @@ class AutoSyncService:
         Returns:
             包含 articles_fetched, events_synced, events_failed 的字典。
         """
-        # 前置检查：we-mp-rss 是否可达
-        if not self._check_rss_reachable():
-            raise ConnectionError(
-                f"we-mp-rss 服务不可达 ({self.settings.we_mp_rss_base_url})，跳过本次同步"
-            )
-
         with contextlib.closing(SessionLocal()) as db:
             run_service = SyncRunService(db)
             run = run_service.start_run("auto-sync", {"trigger": "scheduled"})
+
+            # 前置检查：we-mp-rss 是否可达（在创建 SyncRun 之后，确保失败也有记录）
+            if not self._check_rss_reachable():
+                error_msg = f"we-mp-rss 服务不可达 ({self.settings.we_mp_rss_base_url})"
+                run_service.finish_failure(run, error_msg)
+                raise ConnectionError(error_msg)
 
             try:
                 # 1. 从 we-mp-rss 拉取新文章候选（快速，仅 HTTP + DB 去重）
@@ -131,7 +146,7 @@ class AutoSyncService:
                 self._sync_status["message"] = "正在从 we-mp-rss 拉取文章…"
                 article_service = ArticleService(db)
                 candidates = article_service.fetch_candidates(
-                    limit=50, include_no_content=False
+                    limit=50, include_no_content=True
                 )
                 logger.info("Fetched %d new article candidates", len(candidates))
 
@@ -150,6 +165,10 @@ class AutoSyncService:
                 self._sync_status["phase"] = "extracting"
                 self._sync_status["message"] = f"已处理 {len(articles)} 篇文章，正在重试图片下载…"
                 retried = self._retry_image_downloads(db)
+
+                # 3.3 重试 failed_extract 事件
+                self._sync_status["message"] = "正在重试抽取失败的事件…"
+                extract_retried = self._retry_failed_extracts(db)
 
                 # 3.5 回溯补提取缺少时间信息的事件
                 self._sync_status["message"] = "正在补提取事件时间…"
@@ -180,6 +199,7 @@ class AutoSyncService:
                 result = {
                     "articles_fetched": len(articles),
                     "images_retried": retried,
+                    "extracts_retried": extract_retried,
                     "times_backfilled": backfilled,
                     "statuses_refreshed": refreshed,
                     "events_synced": synced,
@@ -201,6 +221,9 @@ class AutoSyncService:
                 else:
                     run_service.finish_failure(run, f"{failed} events failed to sync")
 
+                # 7. 新活动通知
+                self.notify_new_events(result)
+
                 return result
             except Exception as exc:
                 run_service.finish_failure(run, str(exc))
@@ -219,6 +242,31 @@ class AutoSyncService:
             )
         except Exception as e:
             logger.error("Auto sync failed: %s", e)
+
+    def _run_archive_only(self) -> None:
+        """独立运行自动归档（不依赖同步流程）。
+
+        启动时运行一次，将过期且未保护的事件自动归档。
+        """
+        auto_archive_days = self.settings.auto_archive_expired_days
+        if auto_archive_days <= 0:
+            return
+
+        logger.info("Running standalone auto-archive (cutoff=%d days)...", auto_archive_days)
+        try:
+            with contextlib.closing(SessionLocal()) as db:
+                # 先刷新事件时间状态（确保 event_time_status 是最新的）
+                self._refresh_event_statuses(db)
+
+                from app.services.archive_service import ArchiveService
+                archive_service = ArchiveService(db)
+                result = archive_service.auto_archive_expired(auto_archive_days)
+                if result.get("archived", 0) > 0:
+                    logger.info("Standalone auto-archive result: %s", result)
+                else:
+                    logger.info("Standalone auto-archive: no events to archive")
+        except Exception as e:
+            logger.error("Standalone auto-archive failed: %s", e)
 
     def _retry_image_downloads(self, db: "Session") -> int:
         """重试 needs_image_retry 状态的事件：重新下载图片并抽取。"""
@@ -247,6 +295,38 @@ class AutoSyncService:
 
         if retried:
             logger.info("Image retry: %d events re-processed", retried)
+        return retried
+
+    def _retry_failed_extracts(self, db: "Session") -> int:
+        """重试 failed_extract 状态的事件：重新执行 AI 抽取。"""
+        from app.services.event_extractor import EventExtractor
+
+        failed_events = (
+            db.query(Event)
+            .options(joinedload(Event.article))
+            .filter(Event.status == EventStatus.FAILED_EXTRACT)
+            .limit(20)  # 每次最多重试 20 个
+            .all()
+        )
+        if not failed_events:
+            return 0
+
+        retried = 0
+        extractor = EventExtractor(db)
+        for event in failed_events:
+            try:
+                result = extractor.extract(event)
+                db.commit()
+                if event.status != EventStatus.FAILED_EXTRACT:
+                    retried += 1
+                    logger.info("Retried extract for event %s, new status: %s", event.event_id, event.status)
+                else:
+                    logger.debug("Extract retry still failed for event %s", event.event_id)
+            except Exception as exc:
+                logger.warning("Extract retry failed for event %s: %s", event.event_id, exc)
+
+        if retried:
+            logger.info("Extract retry: %d events recovered", retried)
         return retried
 
     def _refresh_event_statuses(self, db: "Session") -> int:
@@ -467,3 +547,22 @@ class AutoSyncService:
     def get_sync_status(self) -> dict:
         """返回当前同步状态。"""
         return dict(self._sync_status)
+
+    def notify_new_events(self, result: dict) -> None:
+        """同步完成后发送飞书通知（仅当有新活动入库时）。"""
+        events_synced = result.get("events_synced", 0)
+        if events_synced <= 0:
+            return
+
+        articles_fetched = result.get("articles_fetched", 0)
+        try:
+            from app.services.feishu_messenger import FeishuMessenger
+            messenger = FeishuMessenger()
+            message = (
+                f"GoActivity 同步完成: {articles_fetched}个新活动已入库, "
+                f"{events_synced}个已同步到飞书"
+            )
+            messenger.send_daily_report(message)
+            logger.info("Sync notification sent: %s", message)
+        except Exception as exc:
+            logger.warning("Failed to send sync notification: %s", exc)

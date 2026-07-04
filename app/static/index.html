@@ -765,6 +765,38 @@
         }
         .account-status-on { color: var(--accent); font-weight: 600; }
         .account-status-off { color: var(--text-sec); }
+
+        /* ── Type filter tabs ── */
+        .type-tabs { display: flex; gap: 6px; padding: 12px 0; flex-wrap: wrap; }
+        .type-tab {
+            padding: 6px 16px; border-radius: 20px; border: 1px solid var(--border);
+            background: var(--bg-card); cursor: pointer; font-size: 13px;
+            transition: all 0.2s; color: var(--text-sec);
+        }
+        .type-tab:hover { border-color: var(--accent); color: var(--accent); }
+        .type-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+        /* ── Calendar view ── */
+        .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
+        .cal-day { min-height: 100px; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+        .cal-day.today { border-color: var(--accent); background: var(--accent-lt); }
+        .cal-day-header { font-size: 12px; color: var(--text-sec); font-weight: 600; margin-bottom: 4px; }
+        .cal-event { font-size: 11px; padding: 3px 6px; margin-bottom: 3px; border-radius: 4px; background: var(--accent-lt); color: var(--accent); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cal-event:hover { background: var(--accent); color: #fff; }
+
+        /* ── Batch bar ── */
+        .batch-bar { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--bg-dark); color: var(--text-inv); padding: 12px 24px; border-radius: 12px; display: flex; align-items: center; gap: 12px; z-index: 200; box-shadow: var(--shadow-lg); }
+
+        /* ── Edit form in modal ── */
+        .edit-field { margin-bottom: 12px; }
+        .edit-field label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-sec); margin-bottom: 4px; }
+        .edit-field input, .edit-field select { width: 100%; font-family: var(--sans); font-size: 14px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); transition: border-color 0.2s; }
+        .edit-field input:focus, .edit-field select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(26,92,58,0.08); }
+
+        @media (max-width: 768px) {
+            .cal-grid { grid-template-columns: repeat(3, 1fr); }
+            .batch-bar { left: 16px; right: 16px; transform: none; flex-wrap: wrap; justify-content: center; }
+        }
     </style>
 </head>
 <body>
@@ -804,6 +836,14 @@
         <div class="card">
             <div class="card-body">
                 <div id="today-events" class="loading"><span class="spinner"></span>加载中…</div>
+            </div>
+        </div>
+
+        <!-- ══ 本周日历 ══ -->
+        <div class="section-divider"><h2>本周日历</h2></div>
+        <div class="card">
+            <div class="card-body">
+                <div id="calendar-view" class="loading"><span class="spinner"></span>加载中…</div>
             </div>
         </div>
 
@@ -875,6 +915,17 @@
         <!-- ══ 活动列表 ══ -->
         <div class="section-divider"><h2>活动列表</h2></div>
         <div class="card">
+            <div class="card-body" style="padding-bottom:0">
+                <div class="type-tabs" id="type-tabs">
+                    <button class="type-tab active" onclick="filterByType('')">全部</button>
+                    <button class="type-tab" onclick="filterByType('lecture')">🎤 讲座</button>
+                    <button class="type-tab" onclick="filterByType('performance')">🎭 演出</button>
+                    <button class="type-tab" onclick="filterByType('competition')">🏆 比赛</button>
+                    <button class="type-tab" onclick="filterByType('recruitment')">📢 招募</button>
+                    <button class="type-tab" onclick="filterByType('general_event')">📌 其他</button>
+                </div>
+                <input type="hidden" id="filter-type" value="">
+            </div>
             <div class="card-head">
                 <h3>全部活动</h3>
                 <div class="filters">
@@ -910,6 +961,7 @@
                     <table>
                         <thead>
                             <tr>
+                                <th style="width:32px"><input type="checkbox" onchange="toggleSelectAll(this.checked)"></th>
                                 <th>标题</th>
                                 <th>分类</th>
                                 <th>开始时间</th>
@@ -920,7 +972,7 @@
                             </tr>
                         </thead>
                         <tbody id="events-table">
-                            <tr><td colspan="7" class="loading"><span class="spinner"></span>加载中…</td></tr>
+                            <tr><td colspan="8" class="loading"><span class="spinner"></span>加载中…</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -997,16 +1049,40 @@
                                 <th>公众号名称</th>
                                 <th>简介</th>
                                 <th style="width:70px">状态</th>
+                                <th style="width:80px">文章数</th>
+                                <th style="width:140px">最新文章</th>
+                                <th style="width:80px">活动数</th>
                                 <th style="width:160px">操作</th>
                             </tr>
                         </thead>
                         <tbody id="accounts-table">
-                            <tr><td colspan="5" class="loading"><span class="spinner"></span>加载中…</td></tr>
+                            <tr><td colspan="8" class="loading"><span class="spinner"></span>加载中…</td></tr>
                         </tbody>
                     </table>
                 </div>
             </div>
         </div>
+
+        <!-- ══ 历史回顾 ══ -->
+        <div class="section-divider"><h2>历史回顾</h2></div>
+        <div class="card">
+            <div class="card-body">
+                <div class="filters" style="margin-bottom:12px">
+                    <select class="filter-select" id="history-month" onchange="loadHistory()">
+                        <option value="">全部月份</option>
+                    </select>
+                </div>
+                <div id="history-list" class="loading"><span class="spinner"></span>加载中…</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Batch action bar -->
+    <div id="batch-bar" class="batch-bar" style="display:none">
+        <span id="batch-count">已选 0 项</span>
+        <button class="btn btn-sm" onclick="batchAction('sync')">批量同步</button>
+        <button class="btn btn-sm btn-amber" onclick="batchAction('archive')">批量归档</button>
+        <button class="btn btn-sm" onclick="batchAction('keep')">批量置顶</button>
     </div>
 
     <!-- Modal -->
@@ -1078,7 +1154,11 @@
                 if (d.latest_article_ingested_at) {
                     const ago = timeAgo(d.latest_article_ingested_at);
                     const mpInfo = d.latest_article_mp_name ? ` · ${esc(d.latest_article_mp_name)}` : '';
-                    html += `<span class="pipeline-item">📥 最新入库: <strong>${ago}</strong>${mpInfo}</span>`;
+                    if (d.article_stale_warning) {
+                        html += `<span class="pipeline-item warn"><span class="pi-dot amber"></span> 📥 最新入库: <strong>${ago}</strong>${mpInfo}（已${d.article_stale_days}天未更新，请检查 we-mp-rss 抓取状态）</span>`;
+                    } else {
+                        html += `<span class="pipeline-item">📥 最新入库: <strong>${ago}</strong>${mpInfo}</span>`;
+                    }
                 } else {
                     html += `<span class="pipeline-item"><span class="pi-dot gray"></span> 暂无文章</span>`;
                 }
@@ -1088,8 +1168,8 @@
                 if (d.last_sync) {
                     const s = d.last_sync;
                     const ago = s.completed_at ? timeAgo(s.completed_at) : timeAgo(s.started_at);
-                    const dotCls = s.status === 'success' ? 'green' : 'red';
-                    const statusText = s.status === 'success' ? '成功' : '失败';
+                    const dotCls = s.status === 'completed' ? 'green' : 'red';
+                    const statusText = s.status === 'completed' ? '成功' : '失败';
                     html += `<span class="pipeline-item"><span class="pi-dot ${dotCls}"></span> 最后同步飞书: <strong>${ago}</strong>（${statusText}，${s.imported_count}篇）</span>`;
                 } else {
                     html += `<span class="pipeline-item"><span class="pi-dot gray"></span> 暂无同步记录</span>`;
@@ -1159,7 +1239,7 @@
                 const syncEl = document.getElementById('latest-sync');
                 if (data.latest_sync) {
                     const s = data.latest_sync;
-                    const ok = s.status === 'success';
+                    const ok = s.status === 'completed';
                     syncEl.innerHTML = `
                         <div class="sync-banner">
                             <span class="sb-dot ${ok ? 'ok' : 'err'}"></span>
@@ -1307,13 +1387,13 @@
                 const data = await api(`/dashboard/search?q=${encodeURIComponent(q)}`);
                 const tbody = document.getElementById('events-table');
                 if (!data.items.length) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-sec)">未找到匹配的活动</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-sec)">未找到匹配的活动</td></tr>';
                 } else {
                     tbody.innerHTML = data.items.map(e => eventRow(e)).join('');
                 }
                 document.getElementById('events-pagination').innerHTML = `<span class="pg-info">搜索结果: ${data.total} 条</span>`;
             } catch (e) {
-                document.getElementById('events-table').innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--red)">搜索失败</td></tr>';
+                document.getElementById('events-table').innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--red)">搜索失败</td></tr>';
             }
         }
 
@@ -1323,6 +1403,7 @@
                 const d = await api(`/dashboard/events/${eventId}`);
                 if (d.error) { toast(d.error, 'error'); return; }
 
+                _editEventData = d;
                 document.getElementById('modal-title').textContent = d.title;
 
                 let html = '<div class="detail-grid">';
@@ -1389,6 +1470,7 @@
                 }
 
                 html += `<div class="modal-actions">`;
+                html += `<button class="btn btn-outline" onclick="toggleEditMode(true, '${d.event_id}')">编辑</button>`;
                 if (d.status === 'archived') {
                     html += `<button class="btn btn-amber" onclick="unarchiveEvent('${d.event_id}');closeModal()">取消归档</button>`;
                 } else {
@@ -1409,29 +1491,86 @@
         function closeModal() { document.getElementById('event-modal').style.display = 'none'; }
 
         // ── Load events ──
+        // ── Type filter tabs ──
+        function filterByType(type) {
+            document.getElementById('filter-type').value = type;
+            document.querySelectorAll('.type-tab').forEach(btn => {
+                btn.classList.toggle('active', btn.getAttribute('onclick').includes(`'${type}'`));
+            });
+            loadEvents();
+        }
+
+        // ── Batch operations ──
+        let selectedIds = new Set();
+
+        function toggleBatchSelect(eventId, checked) {
+            if (checked) selectedIds.add(eventId); else selectedIds.delete(eventId);
+            updateBatchBar();
+        }
+
+        function toggleSelectAll(checked) {
+            document.querySelectorAll('.batch-cb').forEach(cb => {
+                cb.checked = checked;
+                const id = cb.getAttribute('data-id');
+                if (checked) selectedIds.add(id); else selectedIds.delete(id);
+            });
+            updateBatchBar();
+        }
+
+        function updateBatchBar() {
+            const bar = document.getElementById('batch-bar');
+            const count = selectedIds.size;
+            document.getElementById('batch-count').textContent = `已选 ${count} 项`;
+            bar.style.display = count > 0 ? 'flex' : 'none';
+        }
+
+        async function batchAction(action) {
+            const ids = Array.from(selectedIds);
+            if (!ids.length) { toast('请先选择活动', 'error'); return; }
+            const label = { sync: '批量同步', archive: '批量归档', keep: '批量置顶' }[action];
+            if (!confirm(`确定要对 ${ids.length} 条活动执行「${label}」？`)) return;
+
+            let ok = 0, fail = 0;
+            for (const id of ids) {
+                try {
+                    if (action === 'sync') await api(`/events/${id}/sync-feishu`, { method: 'POST' });
+                    else if (action === 'archive') await api(`/events/${id}/archive`, { method: 'POST' });
+                    else if (action === 'keep') await api(`/events/${id}/keep?value=true`, { method: 'POST' });
+                    ok++;
+                } catch { fail++; }
+            }
+            toast(`${label}完成: 成功 ${ok}，失败 ${fail}`, ok > 0 ? 'success' : 'error');
+            selectedIds.clear();
+            updateBatchBar();
+            loadEvents(currentPage);
+            loadStats();
+        }
+
         async function loadEvents(page = 1) {
             currentPage = page;
             const timeRange = document.getElementById('filter-time').value;
             const status = document.getElementById('filter-status').value;
             const category = document.getElementById('filter-category').value;
+            const type = document.getElementById('filter-type').value;
 
             try {
                 const params = new URLSearchParams({ page, page_size: PAGE_SIZE });
                 if (timeRange) params.set('time_range', timeRange);
                 if (status) params.set('status', status);
                 if (category) params.set('category', category);
+                if (type) params.set('activity_kind', type);
 
                 const data = await api(`/dashboard/events?${params}`);
                 const tbody = document.getElementById('events-table');
 
                 if (!data.items.length) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-sec)">暂无数据</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-sec)">暂无数据</td></tr>';
                 } else {
                     tbody.innerHTML = data.items.map(e => eventRow(e)).join('');
                 }
                 renderPagination(data.page, data.pages, data.total);
             } catch (e) {
-                document.getElementById('events-table').innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--red)">加载失败</td></tr>';
+                document.getElementById('events-table').innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--red)">加载失败</td></tr>';
             }
         }
 
@@ -1450,7 +1589,9 @@
                 actionHtml = `<button class="btn btn-primary btn-sm" onclick="syncEvent('${e.event_id}')">同步到飞书</button>`;
             }
 
+            const checked = selectedIds.has(e.event_id) ? 'checked' : '';
             return `<tr>
+                <td><input type="checkbox" class="batch-cb" data-id="${e.event_id}" ${checked} onchange="toggleBatchSelect('${e.event_id}',this.checked)"></td>
                 <td><a href="#" onclick="showEventDetail('${e.event_id}');return false">${esc(e.title)}</a>${markerHtml}</td>
                 <td>${esc(e.category_1)}</td>
                 <td>${e.start_time || '—'}</td>
@@ -1509,7 +1650,7 @@
                     tbody.innerHTML = data.map(r => `<tr>
                         <td><code style="font-size:12px;color:var(--text-sec)">${esc(r.run_id)}</code></td>
                         <td>${esc(r.source)}</td>
-                        <td><span class="badge ${r.status==='success'?'badge-synced':r.status==='running'?'badge-pending':'badge-failed'}">${r.status}</span></td>
+                        <td><span class="badge ${r.status==='completed'?'badge-synced':r.status==='running'?'badge-pending':'badge-failed'}">${r.status}</span></td>
                         <td>${r.imported_count}</td>
                         <td>${r.started_at ? new Date(r.started_at).toLocaleString() : '—'}</td>
                         <td>${r.completed_at ? new Date(r.completed_at).toLocaleString() : '—'}</td>
@@ -1691,7 +1832,7 @@
                 const d = await api('/accounts?limit=100');
                 const list = (d.data && d.data.list) || d.list || [];
                 if (!list.length) {
-                    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-sec);text-align:center;padding:24px">暂无已订阅公众号，请通过搜索添加</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--text-sec);text-align:center;padding:24px">暂无已订阅公众号，请通过搜索添加</td></tr>';
                     return;
                 }
                 tbody.innerHTML = list.map(mp => `
@@ -1700,6 +1841,9 @@
                         <td style="font-weight:600">${esc(mp.mp_name || '')}</td>
                         <td style="color:var(--text-sec);font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(mp.mp_intro || '')}</td>
                         <td>${mp.status === 1 ? '<span class="account-status-on">启用</span>' : '<span class="account-status-off">停用</span>'}</td>
+                        <td style="font-size:13px">${mp.article_count != null ? mp.article_count : '—'}</td>
+                        <td style="font-size:12px;color:var(--text-sec)">${mp.latest_article_time ? new Date(mp.latest_article_time).toLocaleDateString() : '—'}</td>
+                        <td style="font-size:13px">${mp.event_count != null ? mp.event_count : '—'}</td>
                         <td>
                             <button class="btn btn-outline btn-sm" onclick="refreshAccount('${esc(mp.id)}','${esc(mp.mp_name)}')">抓取最新推文</button>
                             <button class="btn btn-danger btn-sm" onclick="deleteAccount('${esc(mp.id)}','${esc(mp.mp_name)}')">删除</button>
@@ -1707,7 +1851,7 @@
                     </tr>
                 `).join('');
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">加载失败: ${esc(e.message)}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="8" style="color:var(--red)">加载失败: ${esc(e.message)}</td></tr>`;
             }
         }
 
@@ -1799,10 +1943,154 @@
             if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') searchAccounts(); });
         });
 
+        // ── Edit mode toggle ──
+        let _editEventData = null;
+        function toggleEditMode(show, eventId) {
+            const body = document.getElementById('modal-body');
+            if (!show) {
+                if (eventId) showEventDetail(eventId);
+                return;
+            }
+            // Re-render modal content as an edit form
+            if (!_editEventData) { toast('数据异常', 'error'); return; }
+            const d = _editEventData;
+            const editFields = [
+                { key: 'title', label: '标题', type: 'text' },
+                { key: 'start_time', label: '开始时间', type: 'text', placeholder: '如 2025-06-15 14:00' },
+                { key: 'end_time', label: '结束时间', type: 'text', placeholder: '如 2025-06-15 16:00' },
+                { key: 'location', label: '地点', type: 'text' },
+                { key: 'category_1', label: '一级分类', type: 'select', options: ['讲座','演出','比赛','招募','展览','其他'] },
+                { key: 'activity_kind', label: '活动类型', type: 'select', options: ['lecture','performance','competition','recruitment','general_event'] },
+                { key: 'speaker', label: '嘉宾', type: 'text' },
+                { key: 'organizer', label: '主办方', type: 'text' },
+            ];
+
+            let html = '<div id="edit-form">';
+            editFields.forEach(f => {
+                const val = d[f.key] || '';
+                html += `<div class="edit-field"><label>${f.label}</label>`;
+                if (f.type === 'select') {
+                    html += `<select id="edit-${f.key}">${f.options.map(o => `<option value="${o}" ${o===val?'selected':''}>${o}</option>`).join('')}</select>`;
+                } else {
+                    html += `<input type="text" id="edit-${f.key}" value="${esc(val)}" ${f.placeholder?`placeholder="${f.placeholder}"`:''}>`;
+                }
+                html += '</div>';
+            });
+            html += '</div>';
+            html += `<div class="modal-actions" style="margin-top:16px">
+                <button class="btn btn-primary" onclick="saveEvent('${d.event_id}')">保存</button>
+                <button class="btn btn-outline" onclick="toggleEditMode(false, '${d.event_id}')">取消</button>
+            </div>`;
+            body.innerHTML = html;
+        }
+
+        async function saveEvent(eventId) {
+            const fields = ['title','start_time','end_time','location','category_1','activity_kind','speaker','organizer'];
+            const body = {};
+            fields.forEach(f => {
+                const el = document.getElementById(`edit-${f}`);
+                if (el) body[f] = el.value;
+            });
+            try {
+                const r = await api(`/events/${eventId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                toast('保存成功', 'success');
+                closeModal();
+                loadEvents(currentPage);
+            } catch (e) {
+                toast('保存失败: ' + e.message, 'error');
+            }
+        }
+
+        // ── Calendar view ──
+        async function loadCalendar() {
+            try {
+                const data = await api('/dashboard/events?time_range=week&page_size=100');
+                const el = document.getElementById('calendar-view');
+
+                const today = new Date();
+                const dayOfWeek = today.getDay();
+                const monday = new Date(today);
+                monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+
+                const weekDays = ['一','二','三','四','五','六','日'];
+                const events = data.items || [];
+
+                let html = '<div class="cal-grid">';
+                // Day headers
+                weekDays.forEach(d => {
+                    html += `<div class="cal-day-header">周${d}</div>`;
+                });
+                // Day cells
+                for (let i = 0; i < 7; i++) {
+                    const date = new Date(monday);
+                    date.setDate(monday.getDate() + i);
+                    const dateStr = date.toISOString().slice(0, 10);
+                    const isToday = dateStr === today.toISOString().slice(0, 10);
+                    const dayEvents = events.filter(e => e.start_time && e.start_time.slice(0, 10) === dateStr);
+
+                    html += `<div class="cal-day${isToday ? ' today' : ''}">`;
+                    html += `<div style="font-size:13px;font-weight:600;margin-bottom:6px">${date.getMonth()+1}/${date.getDate()}</div>`;
+                    dayEvents.forEach(e => {
+                        html += `<div class="cal-event" onclick="showEventDetail('${e.event_id}')" title="${esc(e.title)}">${esc(e.title)}</div>`;
+                    });
+                    html += '</div>';
+                }
+                html += '</div>';
+                el.innerHTML = html;
+            } catch (e) {
+                document.getElementById('calendar-view').innerHTML = '<span style="color:var(--red)">加载失败</span>';
+            }
+        }
+
+        // ── History section ──
+        async function loadHistory() {
+            const month = document.getElementById('history-month').value;
+            const el = document.getElementById('history-list');
+            el.innerHTML = '<div class="loading"><span class="spinner"></span>加载中…</div>';
+            try {
+                const params = new URLSearchParams({ page_size: 50 });
+                if (month) params.set('month', month);
+                const data = await api(`/dashboard/history?${params}`);
+                const items = data.items || data || [];
+
+                // Populate month filter if empty
+                const monthSelect = document.getElementById('history-month');
+                if (monthSelect.options.length <= 1 && data.months) {
+                    data.months.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m;
+                        opt.textContent = m;
+                        monthSelect.appendChild(opt);
+                    });
+                }
+
+                if (!items.length) {
+                    el.innerHTML = '<div style="padding:20px;color:var(--text-sec);font-style:italic;text-align:center">暂无历史活动</div>';
+                    return;
+                }
+                el.innerHTML = items.map(e => `
+                    <div class="today-item" style="display:flex;justify-content:space-between;align-items:center">
+                        <div>
+                            <div class="ti-title" onclick="showEventDetail('${e.event_id}')" style="font-size:14px">${esc(e.title)}</div>
+                            <div class="ti-meta">${esc(e.category_1 || '')}${e.start_time ? ' · ' + esc(e.start_time) : ''}${e.location ? ' · ' + esc(e.location) : ''}</div>
+                        </div>
+                        <span class="badge badge-archived">已归档</span>
+                    </div>
+                `).join('');
+            } catch (e) {
+                el.innerHTML = '<span style="color:var(--red)">加载失败</span>';
+            }
+        }
+
         // ── Init ──
         document.addEventListener('DOMContentLoaded', () => {
             loadPipelineStatus();
             loadTodayEvents();
+            loadCalendar();
             loadPendingItems();
             loadStats();
             loadEvents();
@@ -1811,6 +2099,7 @@
             loadFeishuLink();
             loadAccuracy();
             loadAccounts();
+            loadHistory();
             setInterval(loadStats, 30000);
             setInterval(loadPipelineStatus, 60000);
         });

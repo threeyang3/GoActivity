@@ -139,7 +139,7 @@ def build_record_fields(event: Event) -> dict[str, Any]:
     set_if("时间状态", select_text("时间状态", event.event_time_status))
     set_if("保留决策", select_text("保留决策", event.retention_decision))
     set_if("用户置顶", checkbox(event.user_keep))
-    set_if("用户参与", checkbox(event.user_participate))
+    # "用户参与" 字段在飞书表格中可能不存在，先不写入
     set_if("置信度", number(event.confidence))
     set_if("关联原因", event.relevance_reason)
     set_if("更新时间", to_datetime_str(utcnow().isoformat()))

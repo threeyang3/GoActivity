@@ -170,3 +170,118 @@ class TimeExtractor:
 
     def _format_datetime(self, value: datetime) -> str:
         return value.astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _extract_location_from_content(self, content: str) -> str:
+        """从文章内容中提取地点信息。
+
+        匹配常见地点模式：地点/地址：XXX、Venue: XXX、【XXX厅/馆】、讲堂XXX 等。
+        返回提取到的地点字符串，未匹配则返回空字符串。
+        """
+        if not content:
+            return ""
+
+        # 地点：XXX / 地址：XXX
+        m = re.search(r"(?:地点|地址)\s*[：:]\s*(.+?)(?:\n|$)", content)
+        if m:
+            return m.group(1).strip()
+
+        # Venue: XXX
+        m = re.search(r"[Vv]enue\s*[：:]\s*(.+?)(?:\n|$)", content)
+        if m:
+            return m.group(1).strip()
+
+        # 【XXX厅】/【XXX馆】/【XXX中心】等
+        m = re.search(r"【([^】]*(?:厅|馆|中心|剧院|剧场|会场|报告厅)[^】]*)】", content)
+        if m:
+            return m.group(1).strip()
+
+        # 讲堂XXX
+        m = re.search(r"(\S{0,10}讲堂\S{0,10})", content)
+        if m:
+            return m.group(1).strip()
+
+        return ""
+
+
+class LocationExtractor:
+    """从文章内容中提取活动地点。"""
+
+    # 地点关键词模式（按优先级排序）
+    PATTERNS = [
+        # "地点：XXX" / "地址：XXX"
+        re.compile(r"(?:地点|地址|Venue|Location)[：:]\s*(.+?)(?:\n|$)", re.IGNORECASE),
+        # "在XXX举办/举行/开展"
+        re.compile(r"在(.{2,20}?)(?:举办|举行|开展|进行|召开)"),
+        # "XXX厅/馆/楼/室"
+        re.compile(r"((?:[一-龥]{2,8}(?:厅|馆|楼|室|堂|院|园|中心|报告厅|会议室|剧场|影院)))"),
+        # "【XXX】" 中的地点
+        re.compile(r"【([^】]{2,20}(?:厅|馆|楼|室|堂))】"),
+    ]
+
+    # 常见地点名称（校园相关）
+    KNOWN_LOCATIONS = [
+        "百周年纪念讲堂", "李莹厅", "讲堂观众厅", "讲堂李莹厅",
+        "光华管理学院", "经济学院", "法学院", "历史学系",
+        "图书馆", "理科教学楼", "文科教学楼", "第二教学楼",
+        "静园二院", "外文楼", "化学楼", "物理楼",
+    ]
+
+    def extract(self, article: "Article", event: "Event", ocr_text: str) -> str:
+        """从文章标题、内容、OCR文本中提取地点。"""
+        # 如果已有地点，不覆盖
+        if event.location:
+            return ""
+
+        # 优先从标题中提取
+        location = self._extract_from_title(article.title or "")
+        if location:
+            return location
+
+        # 从内容中提取
+        content = article.processed_markdown or article.raw_markdown or ""
+        location = self._extract_from_content(content)
+        if location:
+            return location
+
+        # 从OCR文本中提取
+        if ocr_text:
+            location = self._extract_from_content(ocr_text)
+            if location:
+                return location
+
+        return ""
+
+    def _extract_from_title(self, title: str) -> str:
+        """从标题中提取地点。"""
+        # 检查已知地点
+        for loc in self.KNOWN_LOCATIONS:
+            if loc in title:
+                return loc
+
+        # 【XXX厅】模式
+        m = re.search(r"【([^】]{2,20}(?:厅|馆|楼|室|堂))】", title)
+        if m:
+            return m.group(1)
+
+        return ""
+
+    def _extract_from_content(self, content: str) -> str:
+        """从正文中提取地点。"""
+        if not content:
+            return ""
+
+        # 只检查前2000字符（地点通常在文章开头）
+        text = content[:2000]
+
+        for pattern in self.PATTERNS:
+            m = pattern.search(text)
+            if m:
+                location = m.group(1).strip()
+                # 清理：去除多余标点和空白
+                location = re.sub(r"[\s　\-—–·｜|：:，,。.！!？?]+$", "", location)
+                location = re.sub(r"^[\s　\-—–·｜|：:，,。.！!？?]+", "", location)
+                # 长度校验
+                if 2 <= len(location) <= 50:
+                    return location
+
+        return ""

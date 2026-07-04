@@ -180,9 +180,12 @@ class ArchiveService:
         if not end_at:
             return False
 
-        # 确保时区感知
+        # 统一时区：将 cutoff 提升为 timezone-aware（上海时区）再比较
+        from app.utils.time import SHANGHAI_TZ
         if end_at.tzinfo is None:
-            end_at = end_at.replace(tzinfo=timezone.utc)
+            end_at = end_at.replace(tzinfo=SHANGHAI_TZ)
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=SHANGHAI_TZ)
 
         return end_at < cutoff
 

@@ -114,6 +114,10 @@ def list_events(
         # 默认排除终态事件（已忽略、已过期隐藏、已过滤、已归档）
         query = query.filter(Event.status.notin_(EventStatus.TERMINAL_STATUSES))
 
+    # 默认视图（无 time_range 筛选时）排除已过期事件，避免过期活动堆积在列表中
+    if not time_range and not status:
+        query = query.filter(Event.event_time_status != "expired")
+
     if category:
         query = query.filter(Event.category_1 == category)
 
@@ -543,6 +547,16 @@ def get_pipeline_status(db: Session = Depends(get_db)) -> dict[str, Any]:
     # publish_time 格式不统一，取最近 created_at 的那篇的 publish_time
     latest_publish_time = latest_article.publish_time if latest_article else None
 
+    # 3.5 文章新鲜度检查：如果最新文章超过 N 天未更新，说明 we-mp-rss 可能停止抓取
+    article_stale_days = None
+    article_stale_warning = False
+    if latest_article and latest_article.created_at:
+        from datetime import datetime, timezone
+        age = datetime.now(timezone.utc) - latest_article.created_at.replace(tzinfo=timezone.utc)
+        article_stale_days = age.days
+        if article_stale_days >= 3:
+            article_stale_warning = True
+
     # 4. 最后一次同步运行记录
     latest_run = db.query(SyncRun).order_by(SyncRun.started_at.desc()).first()
     last_sync = None
@@ -594,6 +608,8 @@ def get_pipeline_status(db: Session = Depends(get_db)) -> dict[str, Any]:
         "latest_article_ingested_at": latest_article_ingested_at,
         "latest_article_mp_name": latest_article_mp_name,
         "latest_publish_time": latest_publish_time,
+        "article_stale_days": article_stale_days,
+        "article_stale_warning": article_stale_warning,
         "last_sync": last_sync,
         "auto_sync_cron": auto_sync_cron,
         "pending_sync_count": pending_sync_count,
@@ -677,3 +693,108 @@ def get_accuracy_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
             for row in status_distribution
         ],
     }
+
+
+@router.get("/dashboard/history")
+def get_history(
+    page: int = 1,
+    page_size: int = 20,
+    month: str | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """获取历史活动（已归档/已过期/已结束）。"""
+    query = db.query(Event).filter(
+        Event.status.in_(["archived", "expired_hidden"])
+        | (Event.event_time_status.in_(["expired", "ended", "past"]))
+    )
+
+    if month:
+        # month format: "2026-06"
+        query = query.filter(Event.start_time.like(f"{month}%"))
+
+    total = query.count()
+    offset = (page - 1) * page_size
+    events = query.order_by(Event.start_time.desc()).offset(offset).limit(page_size).all()
+
+    # 获取可用月份列表
+    months = (
+        db.query(Event.start_time)
+        .filter(Event.start_time != "")
+        .distinct()
+        .all()
+    )
+    available_months = sorted(
+        set(m[0][:7] for m in months if m[0] and len(m[0]) >= 7),
+        reverse=True,
+    )
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": (total + page_size - 1) // page_size if total > 0 else 0,
+        "available_months": available_months,
+        "items": [
+            {
+                "event_id": e.event_id,
+                "title": e.title or "(无标题)",
+                "category_1": e.category_1,
+                "start_time": e.start_time,
+                "end_time": e.end_time,
+                "location": e.location,
+                "status": e.status,
+                "event_time_status": e.event_time_status,
+                "archived_at": e.archived_at.isoformat() if e.archived_at else None,
+            }
+            for e in events
+        ],
+    }
+
+
+@router.get("/dashboard/accounts-health")
+def get_accounts_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    """获取各公众号的健康状态。"""
+    from app.models import Article
+
+    # 获取所有公众号及其文章统计
+    accounts = (
+        db.query(
+            Article.mp_name,
+            func.count(Article.id).label("article_count"),
+            func.max(Article.publish_time).label("latest_publish"),
+            func.max(Article.created_at).label("latest_ingested"),
+        )
+        .filter(Article.mp_name != "")
+        .group_by(Article.mp_name)
+        .order_by(func.max(Article.created_at).desc())
+        .all()
+    )
+
+    result = []
+    for acc in accounts:
+        # 统计该公众号的事件数
+        event_count = (
+            db.query(func.count(Event.id))
+            .join(Article, Event.article_id == Article.article_id)
+            .filter(Article.mp_name == acc.mp_name)
+            .scalar()
+            or 0
+        )
+
+        # 计算文章新鲜度
+        from datetime import datetime, timezone
+        stale_days = None
+        if acc.latest_ingested:
+            age = datetime.now(timezone.utc) - acc.latest_ingested.replace(tzinfo=timezone.utc)
+            stale_days = age.days
+
+        result.append({
+            "mp_name": acc.mp_name,
+            "article_count": acc.article_count,
+            "event_count": event_count,
+            "latest_publish_time": acc.latest_publish,
+            "latest_ingested_at": acc.latest_ingested.isoformat() if acc.latest_ingested else None,
+            "stale_days": stale_days,
+        })
+
+    return result

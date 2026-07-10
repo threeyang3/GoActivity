@@ -325,9 +325,21 @@ class ArticleService:
         image_count = self._process_images(article)
         event = self._ensure_event_candidate(article)
         EventExtractor(self.db).extract(event)
-        # 去重：如果另一个 event 已有相同 dedup_key，合并到已有 event
-        event = self._dedup_event(event)
+
+        # 收集该文章的所有事件（可能有多个，由 Vision AI 拆分）
+        all_events = (
+            self.db.query(Event)
+            .filter(Event.article_id == article.article_id)
+            .all()
+        )
+
+        # 对每个事件做去重
+        for evt in all_events:
+            self._dedup_event(evt)
+
         self.db.commit()
+
+        # 返回主事件的信息（保持向后兼容）
         return {
             "article_id": article.article_id,
             "event_id": event.event_id,
@@ -479,14 +491,15 @@ class ArticleService:
         return len(images)
 
     def _ensure_event_candidate(self, article: Article) -> Event:
+        primary_event_id = stable_id("event", article.article_id)
         event = (
             self.db.query(Event)
-            .filter(Event.article_id == article.article_id)
+            .filter(Event.event_id == primary_event_id)
             .one_or_none()
         )
         if event is None:
             event = Event(
-                event_id=stable_id("event", article.article_id),
+                event_id=primary_event_id,
                 article_id=article.article_id,
             )
             self.db.add(event)

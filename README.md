@@ -143,7 +143,7 @@ http://localhost:8001
 - 接收 `we-mp-rss` WebHook。
 - 保存原始 payload、Markdown、处理后 Markdown。
 - 下载 Markdown/HTML 中的图片并改写本地路径。
-- 支持 `mock` 和 `openai` 两类 OCR/Vision provider（已配置智谱 AI GLM-4.6V）。
+- 支持 `mock`、`disabled`、`rapid`（本地）、`openai` 四种 OCR provider；`mock`、`openai`、`textai` 三种 Vision provider。当前使用方案C：本地 RapidOCR + 智谱 AI GLM-4.6V 多模态 Vision。
 - 通过 `FeishuAdapter` 调用 `lark-cli`、兼容飞书 CLI 或飞书 OpenAPI；默认 `FEISHU_DRY_RUN=true`，不会真实写飞书。
 - 提供配置自检、同步日志、同步任务状态接口，便于排障。
 - 提供结构化日报/周报（按时间筛选、分类统计、活动列表），支持发送到飞书群/用户。
@@ -151,7 +151,7 @@ http://localhost:8001
 - 飞书视图自动创建/更新（11 个视图，支持过滤、排序、分组）。
 - 事件去重：基于标题+时间+地点的 SHA-256 去重键，避免同一活动重复入库。
 - 抽取后校验：自动修正非法分类、超范围置信度、不合理时间。
-- 图片过滤：自动排除装饰性图片（<50KB、<80px、极端比例），只保留有效海报图。
+- 图片过滤：自动排除装饰性图片（<10KB、<80px、极端比例），大图（≥200×200px）跳过文件大小检查，只保留有效海报图。
 - 事件状态自动刷新：每小时重新评估已同步事件的时间状态（upcoming → past），自动更新飞书。
 - Alembic 数据库迁移系统，支持 schema 版本管理。
 - 统一异常体系（ProviderError/FeishuError/SyncError/ValidationError）。
@@ -246,23 +246,43 @@ GET /sync/runs/latest/we-mp-rss-json
 GET /sync/logs?target=feishu_event
 ```
 
-### OpenAI 兼容 OCR / Vision
+### OCR / Vision 配置
 
-如果要启用真实模型，在 `.env` 中设置：
+支持三种方案：
 
+**方案C（推荐）：本地 OCR + 多模态 Vision**
+```env
+OCR_PROVIDER=rapid           # 本地 RapidOCR（免费、<1秒/张）
+VISION_API_PROVIDER=openai   # 多模态 Vision API（看图片+OCR文字）
+VISION_API_KEY=your_api_key
+VISION_API_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+VISION_API_MODEL=glm-4.6v
+VISION_API_TIMEOUT_SECONDS=60
+```
+依赖：`pip install rapidocr_onnxruntime`
+
+**方案B：全多模态 API**（效果最好，但贵且慢）
 ```env
 OCR_PROVIDER=openai
 VISION_API_PROVIDER=openai
-VISION_API_KEY=your_api_key
-VISION_API_BASE_URL=https://api.openai.com/v1
-VISION_API_MODEL=gpt-4.1-mini
-VISION_API_TIMEOUT_SECONDS=60
 ```
+
+**方案A：本地 OCR + 文本 AI**（成本最低，但丢失视觉信息）
+```env
+OCR_PROVIDER=rapid
+VISION_API_PROVIDER=textai
+```
+
+| 方案 | 每篇成本 | 速度 | 效果 |
+|------|---------|------|------|
+| 方案C | ¥0.02-0.05 | 3-10秒 | 好 |
+| 方案B | ¥0.04-0.30 | 6-60秒 | 最好 |
+| 方案A | ¥0.001-0.005 | 1.5-5秒 | 良好 |
 
 当前实现使用 OpenAI 兼容 `chat/completions`：
 
-- OCR provider 读取图片并返回纯文本
-- Vision provider 返回结构化 JSON
+- OCR provider 读取图片并返回纯文本（rapid 本地，openai API）
+- Vision provider 返回结构化 JSON（openai 多模态，textai 纯文本）
 
 ### 飞书同步
 

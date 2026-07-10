@@ -17,9 +17,14 @@ def test_dashboard_stats_returns_expected_keys() -> None:
     assert "recent_events" in body
     assert "total" in body["articles"]
     assert "total" in body["events"]
+    assert "active" in body["events"]
     assert "synced" in body["events"]
     assert "pending" in body["events"]
     assert "failed" in body["events"]
+    assert "review" in body["events"]
+    assert "failed_extract" in body["events"]
+    assert "failed_sync" in body["events"]
+    assert "needs_image_retry" in body["events"]
 
 
 def test_dashboard_events_returns_paginated() -> None:
@@ -54,6 +59,24 @@ def test_dashboard_events_filter_by_category() -> None:
     assert isinstance(body["items"], list)
 
 
+def test_dashboard_events_filter_by_activity_kind() -> None:
+    with TestClient(app) as client:
+        response = client.get("/dashboard/events", params={"activity_kind": "lecture"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["items"], list)
+
+
+def test_dashboard_events_filter_by_general_recruitment_kind() -> None:
+    with TestClient(app) as client:
+        response = client.get("/dashboard/events", params={"activity_kind": "general_recruitment"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["items"], list)
+
+
 def test_dashboard_sync_logs_returns_list() -> None:
     with TestClient(app) as client:
         response = client.get("/dashboard/sync-logs", params={"limit": 10})
@@ -80,6 +103,16 @@ def test_dashboard_feishu_link_returns_config() -> None:
     body = response.json()
     assert "configured" in body
     assert "url" in body
+
+
+def test_dashboard_history_exposes_month_alias() -> None:
+    with TestClient(app) as client:
+        response = client.get("/dashboard/history")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "months" in body
+    assert "available_months" in body
 
 
 def test_root_redirects_to_dashboard() -> None:

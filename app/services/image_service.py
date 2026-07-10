@@ -19,9 +19,10 @@ MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((?P<url>[^)]+)\)")
 HTML_IMAGE_RE = re.compile(r"<img[^>]+(?:src|data-src)=[\"'](?P<url>[^\"']+)[\"'][^>]*>", re.IGNORECASE)
 
 # 装饰性图片过滤阈值
-_MIN_FILE_SIZE = 50 * 1024      # 50KB — 小于此大小多为图标、分隔线、小装饰
+_MIN_FILE_SIZE = 10 * 1024      # 10KB — 小于此大小多为图标、分隔线、小装饰（微信海报压缩后可能很小）
 _MIN_DIMENSION = 80              # 像素 — 宽或高小于此值为小图标
 _MIN_AREA = 80 * 80              # 面积 — 总像素小于此值为装饰
+_MIN_POSTER_DIMENSION = 200      # 像素 — 宽和高都大于此值时，视为海报候选，跳过文件大小检查
 _MAX_ASPECT_RATIO = 15.0         # 极端比例 — 如 1000x20 的分隔线
 
 
@@ -154,12 +155,14 @@ def _fill_dimensions(path: Path, image: Image) -> None:
 
 
 def _is_too_small(content: bytes, image: Image) -> bool:
-    """下载后检查：文件大小或尺寸是否过小（装饰性图片）。"""
-    # 文件大小过滤
-    if len(content) < _MIN_FILE_SIZE:
-        return True
-    # 尺寸过滤（如果能读到尺寸信息）
+    """下载后检查：文件大小或尺寸是否过小（装饰性图片）。
+
+    微信公众号海报经常被压缩到很小（30-50KB），但仍然是有效海报。
+    因此当图片尺寸足够大（>=200x200）时，跳过文件大小检查。
+    """
     w, h = image.width or 0, image.height or 0
+
+    # 尺寸过滤（如果能读到尺寸信息）
     if w > 0 and h > 0:
         # 单边太小
         if w < _MIN_DIMENSION or h < _MIN_DIMENSION:
@@ -171,6 +174,14 @@ def _is_too_small(content: bytes, image: Image) -> bool:
         ratio = max(w, h) / max(min(w, h), 1)
         if ratio > _MAX_ASPECT_RATIO:
             return True
+        # 尺寸足够大的图片（如海报），不检查文件大小
+        if w >= _MIN_POSTER_DIMENSION and h >= _MIN_POSTER_DIMENSION:
+            return False
+
+    # 文件大小过滤（仅对小图生效）
+    if len(content) < _MIN_FILE_SIZE:
+        return True
+
     return False
 
 

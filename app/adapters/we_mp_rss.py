@@ -109,6 +109,36 @@ class WeMpRssClient:
             raise RuntimeError("WE_MP_RSS_ACCESS_KEY and WE_MP_RSS_SECRET_KEY are required for JSON article sync.")
         return {"Authorization": f"AK-SK {access_key}:{secret_key}"}
 
+    def list_message_tasks(self) -> list[dict[str, Any]]:
+        """获取 we-mp-rss 的消息任务列表（即定时采集任务）。"""
+        response = requests.get(
+            f"{self.base_url}{self.api_base}/message_tasks",
+            params={"limit": 50, "status": 1},  # status=1 表示启用的任务
+            headers=self._auth_headers(),
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload.get("data", {}).get("list", [])
+
+    def trigger_message_task(self, task_id: str) -> dict[str, Any]:
+        """触发指定的消息任务执行（立即采集文章）。
+
+        Args:
+            task_id: 消息任务 ID
+
+        Returns:
+            包含执行结果的字典，如 {"count": 5, "list": [...]}
+        """
+        response = requests.get(
+            f"{self.base_url}{self.api_base}/message_tasks/{task_id}/run",
+            headers=self._auth_headers(),
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload.get("data", {})
+
 
 def _parse_rss_items(xml_text: str) -> list[dict[str, Any]]:
     root = ET.fromstring(xml_text)

@@ -1,7 +1,7 @@
 """Feishu Bitable 视图自动设置服务。
 
-通过 lark-cli 自动创建和配置飞书多维表格视图。
-幂等：运行前先 GET 视图列表，存在则跳过。
+通过 lark-cli 自动创建和更新飞书多维表格视图。
+目标不是堆字段，而是按用户每天真实要做的事情组织视图。
 """
 
 import json
@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ViewConfig:
-    """视图配置"""
+    """视图配置。"""
+
     name: str
     type: str = "grid"  # grid | kanban | calendar | gantt | gallery
     filter_config: dict[str, Any] | None = None
@@ -26,51 +27,17 @@ class ViewConfig:
     visible_fields: list[str] | None = None
 
 
-# ── 字段分组（按填充率和用途） ──
-# 通用字段：所有活动类型都有且填充率高的字段
-_COMMON = ["标题", "活动类型", "一级分类", "开始时间", "结束时间", "活动地点", "主办方", "标签"]
-# 时间地点：日程类视图核心
-_TIME = ["开始时间", "结束时间", "活动地点"]
-# 报名信息
-_REGISTRATION = ["报名方式", "报名链接", "报名截止", "人数限制"]
-# 演出专属（填充率 ~29%，仅演出类有值）
-_PERFORMANCE = ["演出类型", "演出作品", "演出团体", "票价信息"]
-# 讲座专属（填充率 <16%，仅讲座类有值）
-_LECTURE = ["讲座主题", "主讲人头衔", "讲座系列", "嘉宾"]
-# 比赛专属（填充率 <5%，仅比赛类有值）
+# ── 字段分组（按阅读和管理目的组织） ──
+_CORE = ["标题", "活动类型", "一级分类", "开始时间", "结束时间", "活动地点", "主办方"]
+_REGISTRATION = ["报名方式", "报名截止", "报名链接", "人数限制"]
+_PERFORMANCE = ["票价信息", "演出类型", "演出作品", "演出团体"]
+_LECTURE = ["嘉宾", "主讲人头衔", "讲座主题", "讲座系列"]
 _COMPETITION = ["比赛名称", "比赛类型", "截止时间", "奖项设置"]
-# 元数据/管理字段
-_META = ["状态", "时间状态", "保留决策", "置信度", "用户置顶", "更新时间", "关联原因"]
-# 附件/媒体
-_MEDIA = ["海报附件", "封面", "原文链接", "公众号", "摘要"]
 
 
-# 视图配置列表（11 个视图，按使用频率排序）
 VIEW_CONFIGS: list[ViewConfig] = [
-    # 1. 本周活动 — 日程视图，只看时间和地点
     ViewConfig(
-        name="本周活动",
-        type="grid",
-        filter_config={
-            "logic": "and",
-            "conditions": [
-                ["时间状态", "is", "upcoming"],
-                ["状态", "is not", "ignored_non_event"],
-                ["状态", "is not", "archived"],
-                ["保留决策", "is not", "keep_recap_lowest"],
-            ],
-        },
-        sort_config={
-            "sort_config": [{"field": "开始时间", "desc": False}],
-        },
-        visible_fields=[
-            "标题", "活动类型", "一级分类", "开始时间", "结束时间",
-            "活动地点", "主办方", "报名方式", "标签", "海报附件",
-        ],
-    ),
-    # 2. 活动总表 — 全量视图，显示所有通用字段
-    ViewConfig(
-        name="活动总表",
+        name="全部活动",
         type="grid",
         filter_config={
             "logic": "and",
@@ -82,19 +49,103 @@ VIEW_CONFIGS: list[ViewConfig] = [
                 ["状态", "is not", "archived"],
             ],
         },
-        sort_config={
-            "sort_config": [{"field": "开始时间", "desc": False}],
-        },
+        sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
         visible_fields=[
-            "标题", "活动类型", "一级分类", "二级分类",
-            "开始时间", "结束时间", "活动地点", "主办方",
-            "报名方式", "标签", "状态", "时间状态",
-            "置信度", "海报附件", "公众号", "摘要",
-            # 专属字段放最后（填充率低，但在总表中保留以供排查）
-            "嘉宾", "演出类型", "演出作品", "讲座主题", "比赛名称",
+            *_CORE,
+            "报名方式", "报名截止", "票价信息",
+            "状态", "时间状态", "海报附件",
+            "公众号", "原文链接", "摘要",
         ],
     ),
-    # 3. 用户置顶 — 精简，只看核心信息
+    ViewConfig(
+        name="今日执行",
+        type="grid",
+        filter_config={
+            "logic": "and",
+            "conditions": [
+                ["时间状态", "is", "upcoming"],
+                ["状态", "is not", "ignored_non_event"],
+                ["状态", "is not", "archived"],
+                ["保留决策", "is not", "keep_recap_lowest"],
+            ],
+        },
+        sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
+        visible_fields=[
+            "标题", "开始时间", "结束时间", "活动地点", "主办方",
+            "票价信息", "报名方式", "报名截止", "海报附件", "原文链接", "公众号",
+        ],
+    ),
+    ViewConfig(
+        name="演出与放映",
+        type="grid",
+        filter_config={
+            "logic": "and",
+            "conditions": [
+                ["一级分类", "is", "演出"],
+                ["状态", "is not", "ignored_non_event"],
+                ["状态", "is not", "archived"],
+                ["时间状态", "is not", "expired"],
+            ],
+        },
+        sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
+        visible_fields=[
+            "标题", "开始时间", "结束时间", "活动地点",
+            *_PERFORMANCE,
+            "主办方", "原文链接", "海报附件", "公众号", "摘要",
+        ],
+    ),
+    ViewConfig(
+        name="讲座论坛",
+        type="grid",
+        filter_config={
+            "logic": "and",
+            "conditions": [
+                ["一级分类", "is", "讲座"],
+                ["状态", "is not", "archived"],
+                ["时间状态", "is not", "expired"],
+            ],
+        },
+        sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
+        visible_fields=[
+            "标题", "开始时间", "结束时间", "活动地点",
+            *_LECTURE,
+            "主办方", "报名方式", "原文链接", "海报附件", "摘要",
+        ],
+    ),
+    ViewConfig(
+        name="比赛征集",
+        type="grid",
+        filter_config={
+            "logic": "and",
+            "conditions": [
+                ["一级分类", "is", "比赛"],
+                ["状态", "is not", "archived"],
+            ],
+        },
+        sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
+        visible_fields=[
+            "标题", "比赛名称", "比赛类型", "截止时间",
+            "开始时间", "活动地点", "主办方", "报名方式",
+            "报名截止", "奖项设置", "原文链接", "海报附件", "摘要",
+        ],
+    ),
+    ViewConfig(
+        name="招募报名",
+        type="grid",
+        filter_config={
+            "logic": "and",
+            "conditions": [
+                ["一级分类", "is", "招募"],
+                ["状态", "is not", "archived"],
+            ],
+        },
+        sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
+        visible_fields=[
+            "标题", "活动类型", "开始时间", "活动地点", "主办方",
+            *_REGISTRATION,
+            "原文链接", "海报附件", "公众号", "摘要",
+        ],
+    ),
     ViewConfig(
         name="用户置顶",
         type="grid",
@@ -105,166 +156,74 @@ VIEW_CONFIGS: list[ViewConfig] = [
                 ["状态", "is not", "archived"],
             ],
         },
-        sort_config={
-            "sort_config": [{"field": "开始时间", "desc": False}],
-        },
+        sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
         visible_fields=[
-            "标题", "活动类型", "开始时间", "结束时间", "活动地点",
-            "主办方", "报名方式", "原文链接", "海报附件", "状态",
+            "标题", "开始时间", "活动地点", "主办方",
+            "报名方式", "票价信息", "原文链接", "海报附件", "状态",
         ],
     ),
-    # 4. 活动日历（Calendar）
     ViewConfig(
-        name="活动日历",
-        type="calendar",
-        filter_config={
-            "logic": "and",
-            "conditions": [
-                ["状态", "is not", "failed_sync"],
-                ["状态", "is not", "ignored_non_event"],
-                ["状态", "is not", "archived"],
-                ["时间状态", "is not", "expired"],
-                ["时间状态", "is not", "past"],
-            ],
-        },
-    ),
-    # 5. 待审核看板（Kanban）
-    ViewConfig(
-        name="待审核看板",
+        name="待人工处理",
         type="kanban",
-        filter_config={
-            "logic": "and",
-            "conditions": [
-                ["用户置顶", "==", False],
-                ["状态", "is not", "archived"],
-            ],
-        },
-        group_config={
-            "group_config": [{"field": "状态", "desc": False}],
-        },
-    ),
-    # 6. 分类浏览 — 按活动类型分组，显示该类型最相关的字段
-    ViewConfig(
-        name="分类浏览",
-        type="grid",
-        filter_config={
-            "logic": "and",
-            "conditions": [
-                ["时间状态", "is not", "expired"],
-                ["保留决策", "is not", "keep_recap_lowest"],
-                ["状态", "is not", "ignored_non_event"],
-                ["状态", "is not", "archived"],
-            ],
-        },
-        group_config={
-            "group_config": [{"field": "活动类型", "desc": False}],
-        },
-        sort_config={
-            "sort_config": [{"field": "开始时间", "desc": False}],
-        },
-        visible_fields=[
-            "标题", "活动类型", "开始时间", "结束时间",
-            "活动地点", "主办方", "报名方式", "标签", "时间状态", "海报附件",
-            # 专属字段放最后，分组后同类型的在一起，空白较少
-            "嘉宾", "演出类型", "演出作品", "讲座主题", "比赛名称",
-        ],
-    ),
-    # 7. 按公众号分组 — 精简，只看来源和基本信息
-    ViewConfig(
-        name="按公众号分组",
-        type="grid",
-        filter_config={
-            "logic": "and",
-            "conditions": [
-                ["状态", "is not", "ignored_non_event"],
-                ["状态", "is not", "archived"],
-                ["保留决策", "is not", "keep_recap_lowest"],
-            ],
-        },
-        group_config={
-            "group_config": [{"field": "公众号", "desc": False}],
-        },
-        sort_config={
-            "sort_config": [{"field": "开始时间", "desc": False}],
-        },
-        visible_fields=[
-            "标题", "活动类型", "开始时间", "活动地点",
-            "主办方", "标签", "状态", "时间状态", "置信度",
-        ],
-    ),
-    # 8. 失败排查 — 只看排查相关字段
-    ViewConfig(
-        name="失败排查",
-        type="grid",
         filter_config={
             "logic": "or",
             "conditions": [
-                ["状态", "is", "failed_extract"],
+                ["状态", "is", "pending_ai"],
                 ["状态", "is", "failed_sync"],
+                ["状态", "is", "failed_extract"],
+                ["状态", "is", "needs_image_retry"],
             ],
         },
-        sort_config={
-            "sort_config": [{"field": "更新时间", "desc": True}],
-        },
+        group_config={"group_config": [{"field": "状态", "desc": False}]},
         visible_fields=[
-            "标题", "状态", "活动类型", "保留决策", "关联原因",
-            "置信度", "原文链接", "更新时间", "公众号",
+            "标题", "开始时间", "活动地点", "主办方",
+            "时间状态", "置信度", "原文链接", "公众号", "关联原因", "摘要",
         ],
     ),
-    # 9. 已过期 — 精简，只看基础信息
     ViewConfig(
-        name="已过期",
+        name="来源巡检",
         type="grid",
         filter_config={
             "logic": "and",
             "conditions": [
-                ["时间状态", "is", "expired"],
+                ["状态", "is not", "ignored_non_event"],
                 ["状态", "is not", "archived"],
+                ["保留决策", "is not", "keep_recap_lowest"],
             ],
         },
-        sort_config={
-            "sort_config": [{"field": "开始时间", "desc": True}],
-        },
+        group_config={"group_config": [{"field": "公众号", "desc": False}]},
+        sort_config={"sort_config": [{"field": "更新时间", "desc": True}]},
         visible_fields=[
-            "标题", "活动类型", "一级分类", "开始时间", "结束时间",
-            "活动地点", "主办方", "状态", "公众号",
+            "公众号", "标题", "活动类型", "开始时间",
+            "活动地点", "状态", "时间状态", "更新时间", "置信度", "原文链接",
         ],
     ),
-    # 10. 待确认时间 — 只看时间和来源
     ViewConfig(
-        name="待确认时间",
+        name="过期回看",
         type="grid",
         filter_config={
             "logic": "and",
             "conditions": [
-                ["时间状态", "is", "unknown"],
                 ["状态", "is not", "archived"],
+                ["时间状态", "is not", "upcoming"],
+                ["时间状态", "is not", "ongoing"],
+                ["时间状态", "is not", "unknown"],
             ],
         },
-        sort_config={
-            "sort_config": [{"field": "更新时间", "desc": True}],
-        },
+        sort_config={"sort_config": [{"field": "开始时间", "desc": True}]},
         visible_fields=[
-            "标题", "活动类型", "一级分类", "活动地点", "主办方",
-            "原文链接", "公众号", "摘要", "更新时间",
+            "标题", "活动类型", "开始时间", "结束时间", "活动地点",
+            "主办方", "时间状态", "公众号", "原文链接", "海报附件",
         ],
     ),
-    # 11. 活动归档 — 最精简
     ViewConfig(
         name="活动归档",
         type="grid",
-        filter_config={
-            "logic": "and",
-            "conditions": [
-                ["状态", "is", "archived"],
-            ],
-        },
-        sort_config={
-            "sort_config": [{"field": "归档时间", "desc": True}],
-        },
+        filter_config={"logic": "and", "conditions": [["状态", "is", "archived"]]},
+        sort_config={"sort_config": [{"field": "归档时间", "desc": True}]},
         visible_fields=[
-            "标题", "一级分类", "开始时间", "结束时间", "活动地点",
-            "主办方", "公众号", "原文链接", "归档时间",
+            "标题", "活动类型", "开始时间", "结束时间", "活动地点",
+            "主办方", "公众号", "原文链接", "归档时间", "摘要",
         ],
     ),
 ]
@@ -272,16 +231,18 @@ VIEW_CONFIGS: list[ViewConfig] = [
 
 @dataclass
 class ViewSetupResult:
-    """单个视图的设置结果"""
+    """单个视图的设置结果。"""
+
     name: str
-    action: str  # created | skipped | failed
+    action: str  # created | skipped | failed | updated
     view_id: str = ""
     error: str = ""
 
 
 @dataclass
 class SetupAllResult:
-    """全部视图设置结果"""
+    """全部视图设置结果。"""
+
     total: int = 0
     created: int = 0
     updated: int = 0
@@ -291,25 +252,27 @@ class SetupAllResult:
 
 
 class FeishuViewSetupService:
-    """Feishu Bitable 视图自动设置服务"""
+    """Feishu Bitable 视图自动设置服务。"""
 
     def __init__(self) -> None:
         self.settings = get_settings()
         self._command_prefix: list[str] = self._build_command_prefix()
 
     def _build_command_prefix(self) -> list[str]:
-        """构建 lark-cli 命令前缀"""
+        """构建 lark-cli 命令前缀。"""
         return build_lark_cli_command(self.settings.feishu_cli_path)
 
     def _run_cli(self, command: list[str]) -> dict[str, Any]:
-        """执行 lark-cli 命令并返回 JSON 结果"""
+        """执行 lark-cli 命令并返回 JSON 结果。"""
         result = run_cli_command(command, timeout=60)
         if result["return_code"] != 0:
-            raise RuntimeError(f"lark-cli failed (rc={result['return_code']}): {result['stderr'] or result['stdout']}")
+            raise RuntimeError(
+                f"lark-cli failed (rc={result['return_code']}): {result['stderr'] or result['stdout']}"
+            )
         return result["data"] or {"raw": result["stdout"]}
 
     def list_views(self) -> dict[str, str]:
-        """获取现有视图列表，返回 {视图名: 视图ID}"""
+        """获取现有视图列表，返回 {视图名: 视图ID}。"""
         command = [
             *self._command_prefix,
             "base",
@@ -321,10 +284,10 @@ class FeishuViewSetupService:
         ]
         data = self._run_cli(command)
         views = data.get("data", {}).get("views", [])
-        return {v["name"]: v["id"] for v in views}
+        return {view["name"]: view["id"] for view in views}
 
     def create_view(self, config: ViewConfig) -> str:
-        """创建单个视图，返回 view_id"""
+        """创建单个视图，返回 view_id。"""
         payload = {"name": config.name, "type": config.type}
         command = [
             *self._command_prefix,
@@ -343,7 +306,7 @@ class FeishuViewSetupService:
         return view_id
 
     def set_filter(self, view_id: str, config: dict[str, Any]) -> None:
-        """设置视图过滤条件"""
+        """设置视图过滤条件。"""
         command = [
             *self._command_prefix,
             "base",
@@ -358,7 +321,7 @@ class FeishuViewSetupService:
         self._run_cli(command)
 
     def set_sort(self, view_id: str, config: dict[str, Any]) -> None:
-        """设置视图排序"""
+        """设置视图排序。"""
         command = [
             *self._command_prefix,
             "base",
@@ -373,7 +336,7 @@ class FeishuViewSetupService:
         self._run_cli(command)
 
     def set_group(self, view_id: str, config: dict[str, Any]) -> None:
-        """设置视图分组（仅 kanban/gantt）"""
+        """设置视图分组。"""
         command = [
             *self._command_prefix,
             "base",
@@ -388,7 +351,7 @@ class FeishuViewSetupService:
         self._run_cli(command)
 
     def set_visible_fields(self, view_id: str, fields: list[str]) -> None:
-        """设置视图可见字段"""
+        """设置视图可见字段。"""
         config = {"visible_fields": fields}
         command = [
             *self._command_prefix,
@@ -404,8 +367,7 @@ class FeishuViewSetupService:
         self._run_cli(command)
 
     def setup_view(self, config: ViewConfig, existing_views: dict[str, str]) -> ViewSetupResult:
-        """设置单个视图（幂等）"""
-        # 如果视图已存在，更新配置
+        """设置单个视图（幂等）。"""
         if config.name in existing_views:
             view_id = existing_views[config.name]
             logger.info("View %r already exists (id=%s), updating config", config.name, view_id)
@@ -426,38 +388,32 @@ class FeishuViewSetupService:
             return ViewSetupResult(name=config.name, action="failed", error=str(exc))
 
     def _apply_view_config(self, view_id: str, config: ViewConfig) -> None:
-        """应用视图配置（过滤、排序、分组、可见字段）"""
-        # 设置过滤条件
+        """应用视图配置。"""
         if config.filter_config:
             self.set_filter(view_id, config.filter_config)
             logger.debug("Set filter for view %r", config.name)
 
-        # 设置排序
         if config.sort_config:
             self.set_sort(view_id, config.sort_config)
             logger.debug("Set sort for view %r", config.name)
 
-        # 设置分组
         if config.group_config:
             self.set_group(view_id, config.group_config)
             logger.debug("Set group for view %r", config.name)
 
-        # 设置可见字段
         if config.visible_fields:
             self.set_visible_fields(view_id, config.visible_fields)
             logger.debug("Set visible fields for view %r", config.name)
 
     def setup_all_views(self, configs: list[ViewConfig] | None = None) -> SetupAllResult:
-        """批量设置所有视图（幂等）"""
+        """批量设置所有视图（幂等）。"""
         if configs is None:
             configs = VIEW_CONFIGS
 
-        # 获取现有视图
         existing_views = self.list_views()
         logger.info("Found %d existing views: %s", len(existing_views), list(existing_views.keys()))
 
         result = SetupAllResult(total=len(configs))
-
         for config in configs:
             view_result = self.setup_view(config, existing_views)
             result.results.append(view_result)
@@ -476,5 +432,3 @@ class FeishuViewSetupService:
             result.total, result.created, result.updated, result.skipped, result.failed,
         )
         return result
-
-

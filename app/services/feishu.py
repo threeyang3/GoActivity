@@ -201,23 +201,7 @@ class FeishuCLIClient(BaseFeishuClient):
 class LarkCLIClient(BaseFeishuClient):
     def upsert_event(self, event: Event) -> dict[str, Any]:
         payload = build_record_fields(event)
-        command = [
-            *self._command_prefix(),
-            "base",
-            "+record-upsert",
-            "--as",
-            self.settings.feishu_cli_as,
-            "--base-token",
-            self.settings.feishu_bitable_app_token,
-            "--table-id",
-            self.settings.feishu_bitable_table_id,
-            "--json",
-            json.dumps(payload, ensure_ascii=False),
-            "--format",
-            "json",
-        ]
-        if event.feishu_record_id:
-            command.extend(["--record-id", event.feishu_record_id])
+        command = self._build_upsert_command(payload, event.feishu_record_id)
         if self.settings.feishu_dry_run:
             stdout = json.dumps({"dry_run": True, "provider": "lark-cli", "payload": payload}, ensure_ascii=False)
             result = {
@@ -231,9 +215,14 @@ class LarkCLIClient(BaseFeishuClient):
             return result
         self._ensure_cli_config()
         last_result: dict[str, Any] | None = None
-        for attempt in range(1, self.settings.feishu_max_retries + 1):
+        current_record_id = event.feishu_record_id
+        recreate_attempted = False
+        attempt = 0
+        while attempt < self.settings.feishu_max_retries:
+            attempt += 1
+            command = self._build_upsert_command(payload, current_record_id)
             cli_result = run_cli_command(command, timeout=60)
-            record_id = _parse_lark_record_id(cli_result["data"]) or event.feishu_record_id
+            record_id = _parse_lark_record_id(cli_result["data"]) or current_record_id
             last_result = {
                 "return_code": cli_result["return_code"],
                 "stdout": cli_result["stdout"],
@@ -243,9 +232,32 @@ class LarkCLIClient(BaseFeishuClient):
             }
             self._log("feishu_event", event.event_id, " ".join(command), last_result, attempt=attempt)
             if cli_result["return_code"] == 0:
-                if record_id:
-                    self._upload_poster_attachments(event, record_id)
-                return last_result
+                try:
+                    if record_id:
+                        self._upload_poster_attachments(event, record_id)
+                    return last_result
+                except FeishuError as exc:
+                    if current_record_id and not recreate_attempted and _is_missing_record_error("", str(exc)):
+                        logger.warning(
+                            "Feishu attachment upload hit missing record for event %s (record_id=%s); recreating record.",
+                            event.event_id,
+                            current_record_id,
+                        )
+                        current_record_id = ""
+                        event.feishu_record_id = ""
+                        recreate_attempted = True
+                        continue
+                    raise
+            if current_record_id and not recreate_attempted and _is_missing_record_error(cli_result["stdout"], cli_result["stderr"]):
+                logger.warning(
+                    "Feishu record missing for event %s (record_id=%s); recreating record.",
+                    event.event_id,
+                    current_record_id,
+                )
+                current_record_id = ""
+                event.feishu_record_id = ""
+                recreate_attempted = True
+                continue
             if attempt < self.settings.feishu_max_retries:
                 time.sleep(self.settings.feishu_retry_delay_seconds)
         return last_result or {
@@ -312,6 +324,26 @@ class LarkCLIClient(BaseFeishuClient):
 
     def _command_prefix(self) -> list[str]:
         return build_lark_cli_command(self.settings.feishu_cli_path)
+
+    def _build_upsert_command(self, payload: dict[str, Any], record_id: str) -> list[str]:
+        command = [
+            *self._command_prefix(),
+            "base",
+            "+record-upsert",
+            "--as",
+            self.settings.feishu_cli_as,
+            "--base-token",
+            self.settings.feishu_bitable_app_token,
+            "--table-id",
+            self.settings.feishu_bitable_table_id,
+            "--json",
+            json.dumps(payload, ensure_ascii=False),
+            "--format",
+            "json",
+        ]
+        if record_id:
+            command.extend(["--record-id", record_id])
+        return command
 
     def _upload_poster_attachments(self, event: Event, record_id: str) -> None:
         files = existing_poster_files(event)
@@ -632,3 +664,7 @@ def _parse_lark_record_id(data: dict[str, Any] | None) -> str:
         return str(record_ids[0])
     return ""
 
+
+def _is_missing_record_error(stdout: str, stderr: str) -> bool:
+    text = f"{stdout}\n{stderr}".lower()
+    return "not_found" in text

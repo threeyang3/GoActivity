@@ -3,6 +3,7 @@
 import pytest
 from apscheduler.triggers.cron import CronTrigger
 
+from app.services.auto_sync import AutoSyncService
 from app.utils.cron import parse_cron
 
 
@@ -26,3 +27,35 @@ class TestParseCron:
     def test_single_field_raises(self) -> None:
         with pytest.raises(ValueError):
             parse_cron("0")
+
+
+def test_trigger_collection_polls_remote_candidates(monkeypatch, db) -> None:
+    service = AutoSyncService()
+    calls = {"fetch": 0}
+
+    class FakeClient:
+        def list_message_tasks(self):
+            return [{"id": "task-1", "name": "Daily"}]
+
+        def trigger_message_task(self, task_id: str):
+            return {"count": 1}
+
+    class FakeArticleService:
+        def __init__(self, _db) -> None:
+            pass
+
+        def fetch_candidates(self, limit: int, include_no_content: bool):
+            calls["fetch"] += 1
+            if calls["fetch"] < 2:
+                return []
+            return [{"article_id": "new-1"}]
+
+    monkeypatch.setattr("app.adapters.we_mp_rss.WeMpRssClient", FakeClient)
+    monkeypatch.setattr("app.services.article_service.ArticleService", FakeArticleService)
+    monkeypatch.setattr("app.services.auto_sync.ArticleService", FakeArticleService)
+    monkeypatch.setattr("app.services.auto_sync._time.sleep", lambda _: None)
+
+    candidates = service._trigger_we_mp_rss_collection(db)
+
+    assert candidates == [{"article_id": "new-1"}]
+    assert calls["fetch"] == 2

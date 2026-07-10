@@ -8,13 +8,12 @@ from app.utils.lark_cli import is_windows_cmd_launcher, resolve_lark_cli_run_js
 
 
 def test_view_configs_cover_all_views() -> None:
-    """视图配置覆盖 11 个视图"""
+    """视图配置覆盖 11 个面向使用场景的视图"""
     assert len(VIEW_CONFIGS) == 11
     names = [v.name for v in VIEW_CONFIGS]
     expected = [
-        "本周活动", "活动总表", "用户置顶", "活动日历", "待审核看板",
-        "分类浏览", "按公众号分组", "失败排查", "已过期", "待确认时间",
-        "活动归档",
+        "全部活动", "今日执行", "演出与放映", "讲座论坛", "比赛征集",
+        "招募报名", "用户置顶", "待人工处理", "来源巡检", "过期回看", "活动归档",
     ]
     assert names == expected
 
@@ -22,10 +21,9 @@ def test_view_configs_cover_all_views() -> None:
 def test_view_configs_have_correct_types() -> None:
     """每个视图类型正确"""
     type_map = {v.name: v.type for v in VIEW_CONFIGS}
-    assert type_map["活动日历"] == "calendar"
-    assert type_map["待审核看板"] == "kanban"
+    assert type_map["待人工处理"] == "kanban"
     # 其余都是 grid
-    for name in ["本周活动", "活动总表", "用户置顶", "分类浏览", "按公众号分组", "失败排查", "已过期", "待确认时间"]:
+    for name in ["全部活动", "今日执行", "演出与放映", "讲座论坛", "比赛征集", "招募报名", "用户置顶", "来源巡检", "过期回看", "活动归档"]:
         assert type_map[name] == "grid", f"{name} should be grid"
 
 
@@ -36,8 +34,8 @@ def test_view_configs_have_filter_where_expected() -> None:
 
 
 def test_view_configs_have_sort_where_expected() -> None:
-    """Grid 视图都有 sort_config（除了活动日历和待审核看板）"""
-    views_without_sort = {"活动日历", "待审核看板"}
+    """Grid 视图都有 sort_config（待人工处理看板除外）"""
+    views_without_sort = {"待人工处理"}
     for config in VIEW_CONFIGS:
         if config.name in views_without_sort:
             assert config.sort_config is None, f"{config.name} should not have sort"
@@ -47,13 +45,14 @@ def test_view_configs_have_sort_where_expected() -> None:
 
 def test_kanban_view_has_group_config() -> None:
     """看板视图有 group_config"""
-    kanban = next(v for v in VIEW_CONFIGS if v.name == "待审核看板")
+    kanban = next(v for v in VIEW_CONFIGS if v.name == "待人工处理")
     assert kanban.group_config is not None
     assert kanban.group_config["group_config"][0]["field"] == "状态"
 
 
 def test_setup_view_updates_existing(monkeypatch) -> None:
     """已存在的视图会更新配置"""
+    monkeypatch.setattr("app.services.feishu_view_setup.build_lark_cli_command", lambda cli_path: ["lark-cli"])
     service = FeishuViewSetupService()
 
     # Mock lark-cli
@@ -76,6 +75,7 @@ def test_setup_view_updates_existing(monkeypatch) -> None:
 
 def test_setup_view_creates_new(monkeypatch) -> None:
     """新视图被创建"""
+    monkeypatch.setattr("app.services.feishu_view_setup.build_lark_cli_command", lambda cli_path: ["lark-cli"])
     service = FeishuViewSetupService()
 
     # Mock lark-cli 调用
@@ -113,6 +113,7 @@ def test_setup_view_creates_new(monkeypatch) -> None:
 
 def test_setup_all_views_is_idempotent(monkeypatch) -> None:
     """批量设置是幂等的"""
+    monkeypatch.setattr("app.services.feishu_view_setup.build_lark_cli_command", lambda cli_path: ["lark-cli"])
     service = FeishuViewSetupService()
 
     # Mock lark-cli
@@ -152,6 +153,7 @@ def test_setup_all_views_is_idempotent(monkeypatch) -> None:
 
 def test_setup_view_handles_lark_cli_error(monkeypatch) -> None:
     """lark-cli 失败时记录错误"""
+    monkeypatch.setattr("app.services.feishu_view_setup.build_lark_cli_command", lambda cli_path: ["lark-cli"])
     service = FeishuViewSetupService()
 
     def mock_run(command, **kwargs):

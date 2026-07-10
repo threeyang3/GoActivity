@@ -264,6 +264,149 @@ def test_build_client_prefers_lark_cli_when_configured() -> None:
         db.close()
 
 
+def test_lark_cli_recreates_missing_record_on_upsert(monkeypatch) -> None:
+    init_db()
+    db = SessionLocal()
+    event = Event(
+        event_id="event_lark_missing_record_upsert",
+        article_id="article_lark_missing_record_upsert",
+        title="Recreate missing record on upsert",
+        feishu_record_id="rec-stale",
+    )
+    db.add(event)
+    db.commit()
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if "--record-id" in command:
+            return {
+                "return_code": 1,
+                "stdout": "",
+                "stderr": "not_found",
+                "data": {"data": {}},
+            }
+        return {
+            "return_code": 0,
+            "stdout": "{}",
+            "stderr": "",
+            "data": {"data": {"record": {"record_id_list": ["rec-new"]}}},
+        }
+
+    monkeypatch.setattr("app.services.feishu.run_cli_command", fake_run)
+    monkeypatch.setattr("app.services.feishu.existing_poster_files", lambda event: [])
+    monkeypatch.setattr("app.services.feishu.build_lark_cli_command", lambda cli_path: ["lark-cli"])
+
+    client = LarkCLIClient(db)
+    settings = client.settings
+    original_values = (
+        settings.feishu_provider,
+        settings.feishu_dry_run,
+        settings.feishu_max_retries,
+    )
+    try:
+        settings.feishu_provider = "lark_cli"
+        settings.feishu_dry_run = False
+        settings.feishu_max_retries = 3
+        result = client.upsert_event(event)
+        assert result["return_code"] == 0
+        assert result["record_id"] == "rec-new"
+        assert len(calls) == 2
+        assert "--record-id" in calls[0]
+        assert "--record-id" not in calls[1]
+    finally:
+        (
+            settings.feishu_provider,
+            settings.feishu_dry_run,
+            settings.feishu_max_retries,
+        ) = original_values
+        db.query(SyncLog).filter(SyncLog.target_id == event.event_id).delete()
+        db.query(Event).filter(Event.event_id == event.event_id).delete()
+        db.commit()
+        db.close()
+
+
+def test_lark_cli_recreates_missing_record_on_attachment_upload(monkeypatch) -> None:
+    init_db()
+    db = SessionLocal()
+    event = Event(
+        event_id="event_lark_missing_record_attachment",
+        article_id="article_lark_missing_record_attachment",
+        title="Recreate missing record on attachment upload",
+        feishu_record_id="rec-stale",
+        poster_images='["storage/images/demo.jpg"]',
+    )
+    db.add(event)
+    db.commit()
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        joined = " ".join(command)
+        if "+record-upsert" in joined and "--record-id rec-stale" in joined:
+            return {
+                "return_code": 0,
+                "stdout": "{}",
+                "stderr": "",
+                "data": {"data": {"record": {"record_id_list": ["rec-stale"]}}},
+            }
+        if "+record-upload-attachment" in joined and "--record-id rec-stale" in joined:
+            return {
+                "return_code": 1,
+                "stdout": "",
+                "stderr": "not_found",
+                "data": {"data": {}},
+            }
+        if "+record-upsert" in joined:
+            return {
+                "return_code": 0,
+                "stdout": "{}",
+                "stderr": "",
+                "data": {"data": {"record": {"record_id_list": ["rec-new"]}}},
+            }
+        if "+record-upload-attachment" in joined and "--record-id rec-new" in joined:
+            return {
+                "return_code": 0,
+                "stdout": "{}",
+                "stderr": "",
+                "data": {"data": {}},
+            }
+        raise AssertionError(f"Unexpected command: {joined}")
+
+    monkeypatch.setattr("app.services.feishu.run_cli_command", fake_run)
+    monkeypatch.setattr("app.services.feishu.existing_poster_files", lambda event: ["storage/images/demo.jpg"])
+    monkeypatch.setattr("app.services.feishu.build_lark_cli_command", lambda cli_path: ["lark-cli"])
+
+    client = LarkCLIClient(db)
+    settings = client.settings
+    original_values = (
+        settings.feishu_provider,
+        settings.feishu_dry_run,
+        settings.feishu_max_retries,
+    )
+    try:
+        settings.feishu_provider = "lark_cli"
+        settings.feishu_dry_run = False
+        settings.feishu_max_retries = 3
+        result = client.upsert_event(event)
+        assert result["return_code"] == 0
+        assert result["record_id"] == "rec-new"
+        assert len(calls) == 4
+        assert any("+record-upload-attachment" in " ".join(command) and "--record-id rec-new" in " ".join(command) for command in calls)
+    finally:
+        (
+            settings.feishu_provider,
+            settings.feishu_dry_run,
+            settings.feishu_max_retries,
+        ) = original_values
+        db.query(SyncLog).filter(SyncLog.target_id == event.event_id).delete()
+        db.query(Event).filter(Event.event_id == event.event_id).delete()
+        db.commit()
+        db.close()
+
+
 def test_lark_cli_client_parses_record_id(monkeypatch) -> None:
     init_db()
     db = SessionLocal()

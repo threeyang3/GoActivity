@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import case, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
 from app.db import get_db
@@ -28,17 +28,25 @@ def get_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
     # 事件统计 - 合并为单次查询
     event_stats = db.query(
         func.count(Event.id).label("total"),
+        func.sum(case((Event.status.notin_(EventStatus.TERMINAL_STATUSES), 1), else_=0)).label("active"),
         func.sum(case((Event.status == EventStatus.SYNCED, 1), else_=0)).label("synced"),
         func.sum(case((Event.status.in_([EventStatus.EXTRACTED, EventStatus.PENDING_AI]), 1), else_=0)).label("pending"),
-        func.sum(case((Event.status == EventStatus.FAILED_SYNC, 1), else_=0)).label("failed"),
+        func.sum(case((Event.status == EventStatus.FAILED_SYNC, 1), else_=0)).label("failed_sync"),
+        func.sum(case((Event.status == EventStatus.FAILED_EXTRACT, 1), else_=0)).label("failed_extract"),
+        func.sum(case((Event.status == EventStatus.NEEDS_IMAGE_RETRY, 1), else_=0)).label("needs_image_retry"),
         func.sum(case((Event.status == EventStatus.ARCHIVED, 1), else_=0)).label("archived"),
     ).first()
 
     total_events = event_stats.total if event_stats else 0
+    active_events = event_stats.active if event_stats else 0
     synced_events = event_stats.synced if event_stats else 0
     pending_events = event_stats.pending if event_stats else 0
-    failed_events = event_stats.failed if event_stats else 0
+    failed_sync_events = event_stats.failed_sync if event_stats else 0
+    failed_extract_events = event_stats.failed_extract if event_stats else 0
+    needs_image_retry_events = event_stats.needs_image_retry if event_stats else 0
     archived_events = event_stats.archived if event_stats else 0
+    failed_events = failed_sync_events + failed_extract_events + needs_image_retry_events
+    review_events = pending_events + failed_extract_events + needs_image_retry_events
 
     # 最近同步
     latest_run = db.query(SyncRun).order_by(SyncRun.started_at.desc()).first()
@@ -65,9 +73,14 @@ def get_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
         "articles": {"total": total_articles},
         "events": {
             "total": total_events,
+            "active": active_events,
             "synced": synced_events,
             "pending": pending_events,
             "failed": failed_events,
+            "review": review_events,
+            "failed_sync": failed_sync_events,
+            "failed_extract": failed_extract_events,
+            "needs_image_retry": needs_image_retry_events,
             "archived": archived_events,
         },
         "latest_sync": latest_sync,
@@ -91,6 +104,7 @@ def list_events(
     page_size: int = 20,
     status: str | None = None,
     category: str | None = None,
+    activity_kind: str | None = None,
     time_range: str | None = None,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
@@ -106,7 +120,7 @@ def list_events(
     from datetime import datetime, timedelta
     from app.utils.time import SHANGHAI_TZ
 
-    query = db.query(Event)
+    query = db.query(Event).options(joinedload(Event.article))
 
     if status:
         query = query.filter(Event.status == status)
@@ -120,6 +134,9 @@ def list_events(
 
     if category:
         query = query.filter(Event.category_1 == category)
+
+    if activity_kind:
+        query = query.filter(Event.activity_kind == activity_kind)
 
     # 时间范围筛选
     now = datetime.now(SHANGHAI_TZ)
@@ -171,9 +188,13 @@ def list_events(
                 "title": e.title or "(无标题)",
                 "category_1": e.category_1,
                 "category_2": e.category_2,
+                "activity_kind": e.activity_kind,
                 "start_time": e.start_time,
                 "end_time": e.end_time,
                 "location": e.location,
+                "organizer": e.organizer,
+                "speaker": e.speaker,
+                "summary": e.summary,
                 "status": e.status,
                 "event_time_status": e.event_time_status,
                 "retention_decision": e.retention_decision,
@@ -183,6 +204,7 @@ def list_events(
                 "user_participate": e.user_participate,
                 "archived_at": e.archived_at.isoformat() if e.archived_at else None,
                 "created_at": e.created_at.isoformat() if e.created_at else None,
+                "mp_name": e.article.mp_name if e.article else "",
             }
             for e in events
         ],
@@ -733,6 +755,7 @@ def get_history(
         "page": page,
         "page_size": page_size,
         "pages": (total + page_size - 1) // page_size if total > 0 else 0,
+        "months": available_months,
         "available_months": available_months,
         "items": [
             {

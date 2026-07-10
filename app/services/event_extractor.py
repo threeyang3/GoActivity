@@ -16,6 +16,7 @@ from app.services.providers import ProviderSelectionError
 from app.services.time_extractor import TimeExtractor
 from app.services.vision import VisionExtractor
 from app.utils.constants import EventStatus
+from app.utils.ids import stable_id
 from app.utils.jsonx import dumps_json, dumps_list, loads_list
 from app.utils.time import utcnow
 
@@ -27,6 +28,11 @@ class EventExtractor:
         self.db = db
 
     def extract(self, event: Event) -> dict[str, Any]:
+        """抽取单个事件的信息。
+
+        如果 Vision AI 返回多个活动，会自动创建额外的 Event 记录。
+        返回值包含所有创建的事件信息。
+        """
         article = self.db.query(Article).filter(Article.article_id == event.article_id).one_or_none()
         if article is None:
             logger.warning("Article %s not found for event %s, skipping extraction", event.article_id, event.event_id)
@@ -44,9 +50,50 @@ class EventExtractor:
             content_len = len(article.processed_markdown or article.raw_markdown or "")
             if image_paths or content_len > 500:
                 vision = VisionExtractor().analyze(article.title, article.processed_markdown, image_paths, ocr_text)
-            self._apply_result(event, vision, ocr_text)
-            ExtractionValidator().validate(event)
-            extraction_ok = True
+
+            # 检查是否返回了多个活动
+            events_list = vision.get("events")
+            if isinstance(events_list, list) and len(events_list) > 1:
+                # 多个活动：第一个应用到当前 event，其余创建新 event
+                self._apply_single_event(event, events_list[0], ocr_text, image_paths)
+                ExtractionValidator().validate(event)
+                extraction_ok = True
+
+                # 为额外活动创建或更新稳定的 Event 记录，确保重跑幂等。
+                for idx, extra_event_data in enumerate(events_list[1:], start=1):
+                    event_name = extra_event_data.get("event_name") or article.title
+                    extra_event_id = stable_id("event", article.article_id, str(idx), event_name)
+                    new_event = (
+                        self.db.query(Event)
+                        .filter(Event.event_id == extra_event_id)
+                        .one_or_none()
+                    )
+                    if new_event is None:
+                        new_event = Event(
+                            event_id=extra_event_id,
+                            article_id=article.article_id,
+                        )
+                        self.db.add(new_event)
+                    new_event.title = event_name
+                    new_event.source_url = article.url
+                    new_event.poster_images = dumps_list(image_paths)
+                    new_event.ocr_text = ocr_text
+                    self._apply_single_event(new_event, extra_event_data, ocr_text, image_paths)
+                    ExtractionValidator().validate(new_event)
+                    self._post_extract(article, new_event, ocr_text, True)
+                    logger.info(
+                        "Upserted additional event '%s' for article %s",
+                        new_event.title, article.article_id,
+                    )
+
+                logger.info("Extracted %d events from article %s", len(events_list), article.article_id)
+            else:
+                # 单个活动（旧格式或 events 数组只有1个）
+                single_event = events_list[0] if isinstance(events_list, list) and len(events_list) == 1 else vision
+                self._apply_single_event(event, single_event, ocr_text, image_paths)
+                ExtractionValidator().validate(event)
+                extraction_ok = True
+
         except ProviderSelectionError as exc:
             logger.warning("Provider not available for event %s: %s", event.event_id, exc)
             event.status = EventStatus.PENDING_AI
@@ -57,20 +104,28 @@ class EventExtractor:
             event.status = EventStatus.FAILED_EXTRACT
             event.ocr_text = ocr_text
             event.vision_result = dumps_json({"error": str(exc)})
-        self._apply_time_fallback(article, event, ocr_text)
-        self._apply_location_extraction(article, event, ocr_text)
-        self._apply_content_classification(article, event)
-        # 只在抽取成功时生成 dedup_key，避免空字段碰撞
-        if extraction_ok:
-            event.dedup_key = self._generate_dedup_key(event)
-        EventPolicyService(self.db).apply(event)
-        event.updated_at = utcnow()
-        self.db.flush()
+
+        self._post_extract(article, event, ocr_text, extraction_ok)
         return {
             "ocr_text": event.ocr_text,
             "vision_result": vision,
             "status": event.status,
         }
+
+    def _apply_single_event(self, event: Event, result: dict[str, Any], ocr_text: str, image_paths: list[str]) -> None:
+        """将单个活动的 Vision 结果应用到 Event。"""
+        self._apply_result(event, result, ocr_text)
+
+    def _post_extract(self, article: Article, event: Event, ocr_text: str, extraction_ok: bool) -> None:
+        """抽取后的通用处理：时间兜底、地点提取、分类、去重、策略。"""
+        self._apply_time_fallback(article, event, ocr_text)
+        self._apply_location_extraction(article, event, ocr_text)
+        self._apply_content_classification(article, event)
+        if extraction_ok:
+            event.dedup_key = self._generate_dedup_key(event)
+        EventPolicyService(self.db).apply(event)
+        event.updated_at = utcnow()
+        self.db.flush()
 
     def _apply_result(self, event: Event, result: dict[str, Any], ocr_text: str) -> None:
         event.title = result.get("event_name") or event.title

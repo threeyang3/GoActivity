@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import base64
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import requests
 
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
 
 from app.exceptions import ProviderError
 
@@ -176,51 +178,81 @@ class OpenAIVisionProvider(VisionProvider):
         payload = response.json()
         message = payload["choices"][0]["message"]["content"]
         result = _extract_json_object(message)
-        result.setdefault("event_name", title)
-        result.setdefault("summary", _fallback_summary(markdown, ocr_text))
-        result.setdefault("poster_images", image_paths)
-        result.setdefault("tags", [])
-        result.setdefault("confidence", 0.5 if image_paths else 0.3)
-        result.setdefault("is_event", True)
+
+        # 处理新的 events 数组格式（向后兼容旧的单对象格式）
+        events_list = result.get("events")
+        if isinstance(events_list, list) and len(events_list) > 0:
+            # 新格式：为每个事件填充默认值
+            for evt in events_list:
+                evt.setdefault("event_name", title)
+                evt.setdefault("summary", _fallback_summary(markdown, ocr_text))
+                evt.setdefault("poster_images", image_paths)
+                evt.setdefault("tags", [])
+                evt.setdefault("confidence", 0.5 if image_paths else 0.3)
+                evt.setdefault("is_event", True)
+            result["events"] = events_list
+        else:
+            # 旧格式：单对象，填充默认值
+            result.setdefault("event_name", title)
+            result.setdefault("summary", _fallback_summary(markdown, ocr_text))
+            result.setdefault("poster_images", image_paths)
+            result.setdefault("tags", [])
+            result.setdefault("confidence", 0.5 if image_paths else 0.3)
+            result.setdefault("is_event", True)
         return result
 
     @staticmethod
     def _prompt(title: str, markdown: str, ocr_text: str) -> str:
         return (
-            "你是一个校园活动信息抽取专家。从提供的文章文本、OCR 文本和海报图片中提取结构化的活动信息。\n"
-            "返回一个 JSON 对象，包含以下字段：\n\n"
-            "**基础信息**：\n"
+            "你是一个校园活动信息抽取专家。从提供的文章文本、OCR 文本和海报图片中提取结构化的活动信息。\n\n"
+            "**重要：如果一篇文章包含多个不同的活动（如多天的放映、多场讲座），请返回 events 数组。**\n"
+            "**如果只有一个活动，也用 events 数组返回（数组只有一个元素）。**\n\n"
+            "返回一个 JSON 对象：\n"
+            "{\n"
+            '  "events": [\n'
+            "    {\n"
+            '      "is_event": true,\n'
+            '      "event_name": "活动名称",\n'
+            '      "category_1": "一级分类",\n'
+            '      "category_2": "二级分类",\n'
+            '      "start_time": "YYYY-MM-DD HH:MM:SS",\n'
+            '      "end_time": "YYYY-MM-DD HH:MM:SS",\n'
+            '      "location": "活动地点",\n'
+            '      "organizer": "主办方",\n'
+            '      "summary": "活动摘要",\n'
+            '      "tags": [],\n'
+            '      "confidence": 0.9,\n'
+            '      "performance_type": "",\n'
+            '      "performance_name": "",\n'
+            '      "performer": "",\n'
+            '      "ticket_info": "",\n'
+            '      "lecture_topic": "",\n'
+            '      "speaker": "",\n'
+            '      "speaker_title": "",\n'
+            '      "lecture_series": "",\n'
+            '      "competition_name": "",\n'
+            '      "competition_type": "",\n'
+            '      "deadline": "",\n'
+            '      "prize_info": "",\n'
+            '      "registration": "",\n'
+            '      "registration_url": "",\n'
+            '      "registration_deadline": "",\n'
+            '      "participant_limit": ""\n'
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "**字段说明**：\n"
             "- is_event: 是否是活动（true/false）\n"
-            "- event_name: 活动名称（从标题或内容中提取）\n"
-            "- category_1: 一级分类（讲座/演出/比赛/招募/展览/工作坊/分享会/其他）\n"
-            "- category_2: 二级分类（学术/科技/艺术/公益/体育/娱乐/招聘/其他）\n"
-            "- start_time: 开始时间（格式：YYYY-MM-DD HH:MM:SS）\n"
-            "- end_time: 结束时间（格式：YYYY-MM-DD HH:MM:SS）\n"
+            "- event_name: 活动名称\n"
+            "- category_1: 讲座/演出/比赛/招募/展览/工作坊/分享会/其他\n"
+            "- category_2: 学术/科技/艺术/公益/体育/娱乐/招聘/其他\n"
+            "- start_time/end_time: 活动时间（尽量精确到分钟）\n"
             "- location: 活动地点\n"
-            "- organizer: 主办方\n"
-            "- summary: 活动摘要（简洁描述活动内容，不超过 200 字）\n"
-            "- tags: 标签数组（如：免费/收费/线上/线下/报名中/已截止等）\n"
-            "- confidence: 置信度（0-1）\n\n"
-            "**演出信息**（如果是演出/放映/音乐会）：\n"
-            "- performance_type: 演出类型（电影放映/音乐会/话剧/舞蹈/歌剧等）\n"
-            "- performance_name: 演出作品名称（如：《实习生》、《天鹅湖》）\n"
-            "- performer: 演出团体/演员\n"
-            "- ticket_info: 票价信息\n\n"
-            "**讲座信息**（如果是讲座/论坛/沙龙）：\n"
-            "- lecture_topic: 讲座主题\n"
+            "- performance_type: 电影放映/音乐会/话剧/舞蹈/歌剧等\n"
+            "- performance_name: 演出作品名称\n"
+            "- ticket_info: 票价信息\n"
             "- speaker: 主讲人\n"
-            "- speaker_title: 主讲人头衔/简介\n"
-            "- lecture_series: 讲座系列（如：人文讲座第476讲）\n\n"
-            "**比赛信息**（如果是比赛/征稿/大赛）：\n"
-            "- competition_name: 比赛名称\n"
-            "- competition_type: 比赛类型（征稿/竞赛/评选等）\n"
-            "- deadline: 报名/投稿截止时间\n"
-            "- prize_info: 奖项设置\n\n"
-            "**报名信息**：\n"
-            "- registration: 报名方式（如：扫描二维码、填写问卷、发送邮件等）\n"
-            "- registration_url: 报名链接（如果有）\n"
-            "- registration_deadline: 报名截止时间\n"
-            "- participant_limit: 人数限制\n\n"
+            "- registration: 报名方式\n\n"
             "使用空字符串表示未知的标量值，使用空数组 [] 表示未知的标签。\n"
             "尽量从海报图片中提取信息，海报通常包含最完整的活动信息。\n\n"
             f"文章标题：\n{title}\n\n"
@@ -235,12 +267,178 @@ class DisabledOCRProvider(OCRProvider):
         return ""
 
 
+class RapidOCRProvider(OCRProvider):
+    """使用 RapidOCR（基于 PaddleOCR ONNX 推理）的本地 OCR Provider。
+
+    优点：免费、快速（<1秒/张）、不依赖网络。
+    缺点：对复杂排版的识别质量可能不如 Vision API。
+    """
+
+    def __init__(self) -> None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            self._ocr = RapidOCR()
+        except ImportError:
+            raise ProviderSelectionError("rapidocr_onnxruntime is not installed. Run: pip install rapidocr_onnxruntime")
+
+    def extract(self, image_paths: list[str]) -> str:
+        if not image_paths:
+            return ""
+
+        extracted_parts: list[str] = []
+        for path in image_paths[:5]:
+            try:
+                result, _ = self._ocr(path)
+                if result:
+                    texts = [line[1] for line in result if line[1].strip()]
+                    if texts:
+                        extracted_parts.append("\n".join(texts))
+            except Exception as e:
+                logger.warning("RapidOCR failed for %s: %s", path, e)
+
+        return "\n".join(extracted_parts)
+
+
+class TextAIVisionProvider(VisionProvider):
+    """使用纯文本 AI API（如 DeepSeek、Qwen-Text）的 Vision Provider。
+
+    流程：先用本地 OCR 提取文字，再用文本 AI 分析文字内容。
+    优点：成本低（约为多模态 API 的 1/100）、速度快。
+    缺点：丢失图片的视觉信息（颜色、布局、字体等）。
+    """
+
+    def __init__(self, api_key: str, base_url: str, model: str, timeout_seconds: float,
+                 ocr_provider: OCRProvider | None = None) -> None:
+        if not api_key:
+            raise ProviderSelectionError("VISION_API_KEY is required for TextAIVisionProvider")
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.timeout_seconds = timeout_seconds
+        self._ocr = ocr_provider or RapidOCRProvider()
+
+    def analyze(self, title: str, markdown: str, image_paths: list[str], ocr_text: str) -> dict[str, Any]:
+        # 如果没有 OCR 文本，先用本地 OCR 提取
+        if not ocr_text and image_paths:
+            ocr_text = self._ocr.extract(image_paths)
+
+        # 用文本 AI 分析
+        prompt = self._prompt(title=title, markdown=markdown, ocr_text=ocr_text)
+        response = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.model,
+                "max_tokens": 4096,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You extract campus event data from WeChat articles. Return valid JSON only.",
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+            },
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        message = payload["choices"][0]["message"]["content"]
+        result = _extract_json_object(message)
+
+        # 处理 events 数组格式
+        events_list = result.get("events")
+        if isinstance(events_list, list) and len(events_list) > 0:
+            for evt in events_list:
+                evt.setdefault("event_name", title)
+                evt.setdefault("summary", _fallback_summary(markdown, ocr_text))
+                evt.setdefault("poster_images", image_paths)
+                evt.setdefault("tags", [])
+                evt.setdefault("confidence", 0.4)  # 纯文本分析置信度略低
+                evt.setdefault("is_event", True)
+            result["events"] = events_list
+        else:
+            result.setdefault("event_name", title)
+            result.setdefault("summary", _fallback_summary(markdown, ocr_text))
+            result.setdefault("poster_images", image_paths)
+            result.setdefault("tags", [])
+            result.setdefault("confidence", 0.4)
+            result.setdefault("is_event", True)
+        return result
+
+    @staticmethod
+    def _prompt(title: str, markdown: str, ocr_text: str) -> str:
+        return (
+            "你是一个校园活动信息抽取专家。从提供的文章文本和 OCR 文本中提取结构化的活动信息。\n\n"
+            "**重要：如果一篇文章包含多个不同的活动（如多天的放映、多场讲座），请返回 events 数组。**\n"
+            "**如果只有一个活动，也用 events 数组返回（数组只有一个元素）。**\n\n"
+            "返回一个 JSON 对象：\n"
+            "{\n"
+            '  "events": [\n'
+            "    {\n"
+            '      "is_event": true,\n'
+            '      "event_name": "活动名称",\n'
+            '      "category_1": "一级分类",\n'
+            '      "category_2": "二级分类",\n'
+            '      "start_time": "YYYY-MM-DD HH:MM:SS",\n'
+            '      "end_time": "YYYY-MM-DD HH:MM:SS",\n'
+            '      "location": "活动地点",\n'
+            '      "organizer": "主办方",\n'
+            '      "summary": "活动摘要",\n'
+            '      "tags": [],\n'
+            '      "confidence": 0.9,\n'
+            '      "performance_type": "",\n'
+            '      "performance_name": "",\n'
+            '      "performer": "",\n'
+            '      "ticket_info": "",\n'
+            '      "lecture_topic": "",\n'
+            '      "speaker": "",\n'
+            '      "speaker_title": "",\n'
+            '      "lecture_series": "",\n'
+            '      "competition_name": "",\n'
+            '      "competition_type": "",\n'
+            '      "deadline": "",\n'
+            '      "prize_info": "",\n'
+            '      "registration": "",\n'
+            '      "registration_url": "",\n'
+            '      "registration_deadline": "",\n'
+            '      "participant_limit": ""\n'
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "**字段说明**：\n"
+            "- is_event: 是否是活动（true/false）\n"
+            "- event_name: 活动名称\n"
+            "- category_1: 讲座/演出/比赛/招募/展览/工作坊/分享会/其他\n"
+            "- category_2: 学术/科技/艺术/公益/体育/娱乐/招聘/其他\n"
+            "- start_time/end_time: 活动时间（尽量精确到分钟）\n"
+            "- location: 活动地点\n"
+            "- performance_type: 电影放映/音乐会/话剧/舞蹈/歌剧等\n"
+            "- performance_name: 演出作品名称\n"
+            "- ticket_info: 票价信息\n"
+            "- speaker: 主讲人\n"
+            "- registration: 报名方式\n\n"
+            "使用空字符串表示未知的标量值，使用空数组 [] 表示未知的标签。\n\n"
+            f"文章标题：\n{title}\n\n"
+            f"文章内容：\n{markdown[:6000]}\n\n"
+            f"OCR 文本：\n{ocr_text[:4000]}\n\n"
+            "注意：以上内容可能因长度限制被截断，请基于可见内容抽取，不要推测截断后的部分。"
+        )
+
+
 def get_ocr_provider() -> OCRProvider:
     settings = get_settings()
     if settings.ocr_provider == "mock":
         return MockOCRProvider()
     if settings.ocr_provider == "disabled":
         return DisabledOCRProvider()
+    if settings.ocr_provider == "rapid":
+        return RapidOCRProvider()
     if settings.ocr_provider == "openai":
         return OpenAIOCRProvider(
             api_key=settings.vision_api_key,
@@ -257,6 +455,13 @@ def get_vision_provider() -> VisionProvider:
         return MockVisionProvider()
     if settings.vision_api_provider == "openai":
         return OpenAIVisionProvider(
+            api_key=settings.vision_api_key,
+            base_url=settings.vision_api_base_url,
+            model=settings.vision_api_model,
+            timeout_seconds=settings.vision_api_timeout_seconds,
+        )
+    if settings.vision_api_provider == "textai":
+        return TextAIVisionProvider(
             api_key=settings.vision_api_key,
             base_url=settings.vision_api_base_url,
             model=settings.vision_api_model,

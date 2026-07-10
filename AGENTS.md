@@ -106,8 +106,8 @@ Important values already used by the running project include:
 - `FEISHU_REPORT_WEEKLY_CRON` — 周报定时发送 cron 表达式（默认每周一 9:00）
 - `FEISHU_REPORT_DAILY_ENABLED` — 启用/禁用日报定时发送（默认 true）
 - `FEISHU_REPORT_WEEKLY_ENABLED` — 启用/禁用周报定时发送（默认 true）
-- `OCR_PROVIDER` — OCR 提供商（mock / openai）
-- `VISION_API_PROVIDER` — Vision 提供商（mock / openai）
+- `OCR_PROVIDER` — OCR 提供商（mock / disabled / rapid / openai）
+- `VISION_API_PROVIDER` — Vision 提供商（mock / openai / textai）
 - `VISION_API_KEY` — Vision API 密钥
 - `VISION_API_BASE_URL` — Vision API 地址（智谱 AI: `https://open.bigmodel.cn/api/paas/v4`）
 - `VISION_API_MODEL` — Vision 模型（智谱 AI: `glm-4.6v`）
@@ -183,10 +183,11 @@ Key implementation details:
 Decorative images (icons, separators, QR codes) are automatically filtered out.
 
 Filter rules in `app/services/image_service.py`:
-- File size < 50KB (`_MIN_FILE_SIZE`)
+- File size < 10KB (`_MIN_FILE_SIZE`) — only checked for small images
 - Width or height < 80px (`_MIN_DIMENSION`)
 - Area < 80×80 (`_MIN_AREA`)
 - Aspect ratio > 15:1 (`_MAX_ASPECT_RATIO` — separator lines)
+- **Poster exception**: images ≥200×200px skip file size check (微信海报压缩后可能很小)
 
 Filtering happens at two levels:
 1. **Download time** (`_is_too_small`): marks as `filtered_decorative`, not added to image_map
@@ -201,11 +202,12 @@ This re-evaluates poster_images for all synced events, removes decorative images
 ## Auto-Sync Flow
 Each hourly sync run executes these steps in order:
 1. **Fetch candidates** (`fetch_candidates`): paginate we-mp-rss API, dedup against local DB, enrich missing content (fast, HTTP only)
-2. **Parallel ingest** (`ingest_candidates_parallel`): download images (5 workers) → OCR (5 workers, skipped if no images) → Vision API (skipped if no images + short content) → DB commit (4 workers, SQLite lock retry)
-3. Retry failed image downloads (`needs_image_retry` events)
-4. **Parallel status refresh** (`_refresh_event_statuses`): re-evaluate `event_time_status` for all synced events; changed ones synced to Feishu in parallel (2 workers)
-5. **Parallel Feishu sync** (`_sync_event_ids_parallel`): new events synced to Feishu Bitable in parallel (3 workers, per-thread SessionLocal + FeishuAdapter)
-6. **Auto-archive expired** (`auto_archive_expired`): events expired > N days archived automatically (skips `user_keep`/`user_participate`), configurable via `AUTO_ARCHIVE_EXPIRED_DAYS`
+2. **Dry spell detection**: if no candidates AND no new articles in last 24h, trigger we-mp-rss collection and re-fetch (最多等10分钟)
+3. **Parallel ingest** (`ingest_candidates_parallel`): download images (5 workers) → OCR (5 workers, skipped if no images) → Vision API (skipped if no images + short content) → DB commit (4 workers, SQLite lock retry)
+4. Retry failed image downloads (`needs_image_retry` events)
+5. **Parallel status refresh** (`_refresh_event_statuses`): re-evaluate `event_time_status` for all synced events; changed ones synced to Feishu in parallel (2 workers)
+6. **Parallel Feishu sync** (`_sync_event_ids_parallel`): new events synced to Feishu Bitable in parallel (3 workers, per-thread SessionLocal + FeishuAdapter)
+7. **Auto-archive expired** (`auto_archive_expired`): events expired > N days archived automatically (skips `user_keep`/`user_participate`), configurable via `AUTO_ARCHIVE_EXPIRED_DAYS`
 
 Steps 4 and 5 use `ThreadPoolExecutor` with per-thread DB sessions, following the same thread-safety pattern as step 2. SQLite "database is locked" retries are handled automatically.
 
@@ -290,6 +292,11 @@ If touching Feishu sync, verify both:
 - **we-mp-rss 定时采集**: 数据库中已有 MessageTask（每天 9:00 采集所有公众号）。添加新公众号后自动纳入，无需额外配置。we-mp-rss 的增量获取靠数据库去重（url+id），每次拉最新页。
 - **we-mp-rss 过滤规则**: `filter_rules` 表是 HTML 内容清洗（移除广告/页脚等 DOM），不是文章筛选。不支持按标题/关键词过滤文章。
 - **we-mp-rss 浏览器弹窗**: `driver/wxarticle.py` 文章内容抓取已改为 `headless=True`（2026-06-27），不再弹出浏览器窗口。扫码登录（`driver/wx.py`）保持有头模式。
+- **we-mp-rss B: 盘弹窗**: `driver/playwright_driver.py` 的 `use_native_edge_profile` 必须为 `False`，否则会触发 Windows 驱动器枚举弹窗。
+- **we-mp-rss GBK 编码**: `main.py` 的 UTF-8 修复只用 `sys.stdout.reconfigure()`，不要用 `io.TextIOWrapper(sys.stdout.buffer)` 替换（会触发 B: 盘弹窗）。
+- **we-mp-rss Token 状态**: `getStatus()` 使用 `expiry_timestamp` 动态判断过期，`remaining_seconds` 是静态快照不可靠。
+- **多事件支持**: Vision Prompt 返回 `events` 数组，一篇文章可创建多个 Event。每个 Event 独立去重。
+- **RapidOCR**: `OCR_PROVIDER=rapid` 使用本地 RapidOCR（`pip install rapidocr_onnxruntime`），免费、快速（<1秒/张）。
 
 ## Handoff Notes
 When continuing work, assume the following are already true unless a later failure shows otherwise:

@@ -41,7 +41,7 @@ class MockOCRProvider(OCRProvider):
 class OpenAIOCRProvider(OCRProvider):
     def __init__(self, api_key: str, base_url: str, model: str, timeout_seconds: float) -> None:
         if not api_key:
-            raise ProviderSelectionError("VISION_API_KEY is required when OCR_PROVIDER=openai")
+            raise ProviderSelectionError("OCR_API_KEY is required when OCR_PROVIDER=openai_compatible")
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -65,8 +65,8 @@ class OpenAIOCRProvider(OCRProvider):
                     part = future.result()
                     if part.strip():
                         extracted_parts.append(part)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("OCR extraction failed for image: %s", exc)
         return "\n".join(extracted_parts)
 
     def _extract_single_image(self, image_path: str) -> str:
@@ -310,12 +310,12 @@ class TextAIVisionProvider(VisionProvider):
     def __init__(self, api_key: str, base_url: str, model: str, timeout_seconds: float,
                  ocr_provider: OCRProvider | None = None) -> None:
         if not api_key:
-            raise ProviderSelectionError("VISION_API_KEY is required for TextAIVisionProvider")
+            raise ProviderSelectionError("TEXT_AI_API_KEY is required when TEXT_AI_PROVIDER=openai_compatible")
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout_seconds = timeout_seconds
-        self._ocr = ocr_provider or RapidOCRProvider()
+        self._ocr = ocr_provider or DisabledOCRProvider()
 
     def analyze(self, title: str, markdown: str, image_paths: list[str], ocr_text: str) -> dict[str, Any]:
         # 如果没有 OCR 文本，先用本地 OCR 提取
@@ -439,33 +439,37 @@ def get_ocr_provider() -> OCRProvider:
         return DisabledOCRProvider()
     if settings.ocr_provider == "rapid":
         return RapidOCRProvider()
-    if settings.ocr_provider == "openai":
+    if settings.ocr_provider in ("openai", "openai_compatible"):
         return OpenAIOCRProvider(
-            api_key=settings.vision_api_key,
-            base_url=settings.vision_api_base_url,
-            model=settings.vision_api_model,
-            timeout_seconds=settings.vision_api_timeout_seconds,
+            api_key=settings.ocr_api_key,
+            base_url=settings.ocr_api_base_url,
+            model=settings.ocr_api_model,
+            timeout_seconds=settings.ocr_api_timeout_seconds,
         )
     raise ProviderSelectionError(f"Unsupported OCR_PROVIDER: {settings.ocr_provider}")
 
 
 def get_vision_provider() -> VisionProvider:
     settings = get_settings()
-    if settings.vision_api_provider == "mock":
+    vision_provider = settings.vision_api_provider
+    if vision_provider == "mock":
         return MockVisionProvider()
-    if settings.vision_api_provider == "openai":
+    if vision_provider in ("openai", "openai_compatible"):
         return OpenAIVisionProvider(
             api_key=settings.vision_api_key,
             base_url=settings.vision_api_base_url,
             model=settings.vision_api_model,
             timeout_seconds=settings.vision_api_timeout_seconds,
         )
-    if settings.vision_api_provider == "textai":
+    if vision_provider == "textai" or settings.text_ai_provider in ("openai", "openai_compatible", "mock"):
+        if settings.text_ai_provider == "mock":
+            return MockVisionProvider()
         return TextAIVisionProvider(
-            api_key=settings.vision_api_key,
-            base_url=settings.vision_api_base_url,
-            model=settings.vision_api_model,
-            timeout_seconds=settings.vision_api_timeout_seconds,
+            api_key=settings.text_ai_api_key or settings.vision_api_key,
+            base_url=settings.text_ai_api_base_url or settings.vision_api_base_url,
+            model=settings.text_ai_api_model or settings.vision_api_model,
+            timeout_seconds=settings.text_ai_api_timeout_seconds or settings.vision_api_timeout_seconds,
+            ocr_provider=get_ocr_provider(),
         )
     raise ProviderSelectionError(f"Unsupported VISION_API_PROVIDER: {settings.vision_api_provider}")
 

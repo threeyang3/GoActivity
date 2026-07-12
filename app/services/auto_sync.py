@@ -47,6 +47,9 @@ class AutoSyncService:
 
     def start(self) -> None:
         """启动定时任务调度器。"""
+        self.settings = get_settings()
+        if self.scheduler.running:
+            self.scheduler.remove_all_jobs()
         # 启动前恢复卡死的 SyncRun
         self._recover_stuck_runs()
 
@@ -82,13 +85,20 @@ class AutoSyncService:
         else:
             logger.info("Auto sync disabled (AUTO_SYNC_CRON not set)")
 
-        self.scheduler.start()
+        if not self.scheduler.running:
+            self.scheduler.start()
         logger.info("Auto sync scheduler started")
 
     def shutdown(self) -> None:
         """关闭定时任务调度器。"""
-        self.scheduler.shutdown()
-        logger.info("Auto sync scheduler stopped")
+        if self.scheduler.running:
+            self.scheduler.shutdown()
+            logger.info("Auto sync scheduler stopped")
+
+    def reload_settings(self) -> None:
+        """重新加载配置并重建任务。"""
+        self.settings = get_settings()
+        self.start()
 
     def _check_rss_reachable(self) -> bool:
         """检查 we-mp-rss 是否可达。使用 /api/docs 端点（与 tray 管理器一致）。"""
@@ -499,7 +509,13 @@ class AutoSyncService:
         to_refresh: list[tuple[str, str, str]] = []  # (event_id, old_status, new_status)
         for event in synced_events:
             old_status = event.event_time_status
-            new_status = event_time_status(event.start_time, event.end_time)
+            new_status = event_time_status(
+                event.start_time,
+                event.end_time,
+                start_at=event.start_at,
+                end_at=event.end_at,
+                tz_name=event.timezone or "Asia/Shanghai",
+            )
             if new_status != old_status:
                 to_refresh.append((event.event_id, old_status, new_status))
                 event.event_time_status = new_status
@@ -564,7 +580,13 @@ class AutoSyncService:
                 if not changed:
                     continue
                 # 重新计算时间状态
-                new_time_status = event_time_status(event.start_time, event.end_time)
+                new_time_status = event_time_status(
+                    event.start_time,
+                    event.end_time,
+                    start_at=event.start_at,
+                    end_at=event.end_at,
+                    tz_name=event.timezone or "Asia/Shanghai",
+                )
                 event.event_time_status = new_time_status
                 EventPolicyService(db).apply(event)
                 db.flush()

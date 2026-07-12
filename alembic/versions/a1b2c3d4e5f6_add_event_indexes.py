@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 # revision identifiers, used by Alembic.
@@ -20,9 +21,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # 为高频查询字段添加索引
-    op.create_index('ix_events_status', 'events', ['status'])
-    op.create_index('ix_events_start_time', 'events', ['start_time'])
-    op.create_index('ix_events_feishu_record_id', 'events', ['feishu_record_id'])
+    inspector = inspect(op.get_bind())
+    indexes = {index["name"] for index in inspector.get_indexes("events")}
+    if 'ix_events_status' not in indexes:
+        op.create_index('ix_events_status', 'events', ['status'])
+    if 'ix_events_start_time' not in indexes:
+        op.create_index('ix_events_start_time', 'events', ['start_time'])
+    if 'ix_events_feishu_record_id' not in indexes:
+        op.create_index('ix_events_feishu_record_id', 'events', ['feishu_record_id'])
 
 
 def downgrade() -> None:

@@ -8,6 +8,9 @@ import logging
 import requests as http_requests
 from fastapi import APIRouter, HTTPException, Query
 
+from fastapi import Depends
+
+from app.auth import require_admin
 from app.config import get_settings
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
@@ -83,7 +86,7 @@ def search_accounts(kw: str, limit: int = 10, offset: int = 0):
 
 
 @router.post("")
-def add_account(body: dict):
+def add_account(body: dict, _auth: None = Depends(require_admin)):
     """添加公众号。需要搜索结果中的 mp_id、mp_name、avatar 等字段。"""
     try:
         resp = http_requests.post(
@@ -96,7 +99,7 @@ def add_account(body: dict):
 
 
 @router.delete("/{mp_id}")
-def delete_account(mp_id: str):
+def delete_account(mp_id: str, _auth: None = Depends(require_admin)):
     """删除公众号。"""
     try:
         resp = http_requests.delete(
@@ -108,8 +111,8 @@ def delete_account(mp_id: str):
         raise _proxy_error(e)
 
 
-@router.get("/update/{mp_id}")
-def update_account_articles(mp_id: str):
+@router.post("/update/{mp_id}")
+def update_account_articles(mp_id: str, _auth: None = Depends(require_admin)):
     """触发公众号文章更新。"""
     try:
         resp = http_requests.get(

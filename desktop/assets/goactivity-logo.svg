@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="GoActivity">
+  <rect width="128" height="128" rx="28" fill="#163227"/>
+  <rect x="18" y="18" width="92" height="92" rx="22" fill="#1b6a47"/>
+  <rect x="34" y="36" width="60" height="48" rx="10" fill="#f6f1e7"/>
+  <rect x="42" y="24" width="8" height="20" rx="4" fill="#f6f1e7"/>
+  <rect x="78" y="24" width="8" height="20" rx="4" fill="#f6f1e7"/>
+  <rect x="42" y="54" width="44" height="6" rx="3" fill="#1b6a47"/>
+  <rect x="42" y="66" width="32" height="6" rx="3" fill="#1b6a47"/>
+  <circle cx="92" cy="92" r="12" fill="#f0b63a"/>
+</svg>

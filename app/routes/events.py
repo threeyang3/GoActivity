@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 
+from app.auth import require_admin
 from app.db import get_db
 from app.models import Event
 from app.routes.helpers import event_to_out
@@ -57,6 +58,7 @@ def edit_event(
     event_id: str,
     body: EventEditRequest,
     db: Session = Depends(get_db),
+    _auth: None = Depends(require_admin),
 ) -> EventOut:
     """编辑活动信息（部分更新）。
 
@@ -84,20 +86,26 @@ def edit_event(
     db.flush()
 
     # 如已同步到飞书，同步更新
+    feishu_sync_error = None
     if event.feishu_record_id:
         try:
             FeishuAdapter(db).sync_event(event)
         except Exception as exc:
             logger.warning("Feishu sync after edit failed for %s: %s", event.event_id, exc)
+            feishu_sync_error = str(exc)
 
     db.commit()
-    return event_to_out(event)
+    result = event_to_out(event)
+    if feishu_sync_error:
+        result.feishu_sync_warning = feishu_sync_error
+    return result
 
 
 @router.post("/events/batch", response_model=BatchResponse)
 def batch_events(
     body: BatchRequest,
     db: Session = Depends(get_db),
+    _auth: None = Depends(require_admin),
 ) -> BatchResponse:
     """批量操作活动：归档、同步飞书、置顶。"""
     valid_actions = {"archive", "sync", "keep"}
@@ -147,7 +155,7 @@ def batch_events(
 
 
 @router.post("/events/{event_id}/extract", response_model=ExtractResponse)
-def extract_event(event_id: str, db: Session = Depends(get_db)) -> ExtractResponse:
+def extract_event(event_id: str, db: Session = Depends(get_db), _auth: None = Depends(require_admin)) -> ExtractResponse:
     event = db.query(Event).filter(Event.event_id == event_id).one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -157,7 +165,7 @@ def extract_event(event_id: str, db: Session = Depends(get_db)) -> ExtractRespon
 
 
 @router.post("/events/{event_id}/sync-feishu", response_model=FeishuSyncResponse)
-def sync_feishu(event_id: str, db: Session = Depends(get_db)) -> FeishuSyncResponse:
+def sync_feishu(event_id: str, db: Session = Depends(get_db), _auth: None = Depends(require_admin)) -> FeishuSyncResponse:
     event = db.query(Event).filter(Event.event_id == event_id).one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -166,7 +174,7 @@ def sync_feishu(event_id: str, db: Session = Depends(get_db)) -> FeishuSyncRespo
 
 
 @router.post("/events/{event_id}/keep", response_model=EventKeepResponse)
-def keep_event(event_id: str, value: bool = True, db: Session = Depends(get_db)) -> EventKeepResponse:
+def keep_event(event_id: str, value: bool = True, db: Session = Depends(get_db), _auth: None = Depends(require_admin)) -> EventKeepResponse:
     event = db.query(Event).filter(Event.event_id == event_id).one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -184,7 +192,7 @@ def keep_event(event_id: str, value: bool = True, db: Session = Depends(get_db))
 
 
 @router.post("/events/{event_id}/participate", response_model=ParticipateResponse)
-def participate_event(event_id: str, value: bool = True, db: Session = Depends(get_db)) -> ParticipateResponse:
+def participate_event(event_id: str, value: bool = True, db: Session = Depends(get_db), _auth: None = Depends(require_admin)) -> ParticipateResponse:
     """标记/取消标记用户参与活动。参与的活动不会被自动归档。"""
     event = db.query(Event).filter(Event.event_id == event_id).one_or_none()
     if not event:
@@ -199,7 +207,7 @@ def participate_event(event_id: str, value: bool = True, db: Session = Depends(g
 
 
 @router.post("/events/{event_id}/archive", response_model=ArchiveResponse)
-def archive_event(event_id: str, db: Session = Depends(get_db)) -> ArchiveResponse:
+def archive_event(event_id: str, db: Session = Depends(get_db), _auth: None = Depends(require_admin)) -> ArchiveResponse:
     """手动归档事件：清除重数据，保留基本信息用于追溯。"""
     event = (
         db.query(Event)
@@ -221,7 +229,7 @@ def archive_event(event_id: str, db: Session = Depends(get_db)) -> ArchiveRespon
 
 
 @router.post("/events/{event_id}/unarchive", response_model=ArchiveResponse)
-def unarchive_event(event_id: str, db: Session = Depends(get_db)) -> ArchiveResponse:
+def unarchive_event(event_id: str, db: Session = Depends(get_db), _auth: None = Depends(require_admin)) -> ArchiveResponse:
     """取消归档：恢复事件状态为 extracted。"""
     event = db.query(Event).filter(Event.event_id == event_id).one_or_none()
     if not event:
@@ -236,7 +244,7 @@ def unarchive_event(event_id: str, db: Session = Depends(get_db)) -> ArchiveResp
 
 
 @router.post("/events/cleanup-expired", response_model=CleanupExpiredResponse)
-def cleanup_expired_events(db: Session = Depends(get_db)) -> CleanupExpiredResponse:
+def cleanup_expired_events(db: Session = Depends(get_db), _auth: None = Depends(require_admin)) -> CleanupExpiredResponse:
     """扫描所有活跃事件，将过期事件的状态更新为 expired_hidden（保留在飞书表格中）。"""
     events = (
         db.query(Event)
@@ -278,7 +286,7 @@ def cleanup_expired_events(db: Session = Depends(get_db)) -> CleanupExpiredRespo
 
 
 @router.post("/events/refilter-images")
-def refilter_images(db: Session = Depends(get_db)) -> dict[str, Any]:
+def refilter_images(db: Session = Depends(get_db), _auth: None = Depends(require_admin)) -> dict[str, Any]:
     """重新过滤所有已同步事件的海报图片（排除装饰性图片）。
 
     对每个已同步到飞书的事件，重新评估 poster_images，
@@ -338,79 +346,3 @@ def refilter_images(db: Session = Depends(get_db)) -> dict[str, Any]:
     }
 
 
-@router.put("/events/{event_id}")
-def update_event(event_id: str, body: dict, db: Session = Depends(get_db)) -> dict:
-    """编辑活动信息。"""
-    from app.utils.time import utcnow
-
-    event = (
-        db.query(Event)
-        .options(joinedload(Event.article))
-        .filter(Event.event_id == event_id)
-        .one_or_none()
-    )
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    editable_fields = [
-        "title", "start_time", "end_time", "location", "category_1", "category_2",
-        "activity_kind", "speaker", "organizer", "summary",
-    ]
-    for field in editable_fields:
-        if field in body:
-            setattr(event, field, body[field] or "")
-
-    if "tags" in body and isinstance(body["tags"], list):
-        from app.utils.jsonx import dumps_list
-        event.tags = dumps_list(body["tags"])
-
-    from app.services.event_policy import EventPolicyService
-    EventPolicyService(db).apply(event)
-    event.updated_at = utcnow()
-    db.commit()
-
-    if event.feishu_record_id:
-        try:
-            FeishuAdapter(db).sync_event(event)
-        except Exception as exc:
-            logger.warning("Failed to sync updated event to Feishu: %s", exc)
-
-    return {"status": "updated", "event_id": event.event_id}
-
-
-@router.post("/events/batch")
-def batch_action(body: dict, db: Session = Depends(get_db)) -> dict:
-    """批量操作活动。"""
-    action = body.get("action", "")
-    event_ids = body.get("event_ids", [])
-
-    if not action or not event_ids:
-        raise HTTPException(status_code=400, detail="action and event_ids required")
-
-    processed = 0
-    failed = 0
-    errors = []
-
-    for eid in event_ids:
-        event = db.query(Event).filter(Event.event_id == eid).one_or_none()
-        if not event:
-            failed += 1
-            errors.append(f"{eid}: not found")
-            continue
-
-        try:
-            if action == "archive":
-                ArchiveService(db).archive_event(event, source="user")
-            elif action == "sync":
-                FeishuAdapter(db).sync_event(event)
-            elif action == "keep":
-                event.user_keep = True
-                db.commit()
-            else:
-                raise ValueError(f"Unknown action: {action}")
-            processed += 1
-        except Exception as exc:
-            failed += 1
-            errors.append(f"{eid}: {str(exc)[:80]}")
-
-    return {"processed": processed, "failed": failed, "errors": errors}

@@ -65,6 +65,15 @@ class BotEventConsumer:
         self._running = False
         logger.info("Feishu bot consumer stopped")
 
+    def reload_settings(self) -> None:
+        """重新加载配置。必要时重启消费者。"""
+        self.settings = get_settings()
+        was_running = self.running
+        if was_running:
+            self.shutdown()
+        if self.settings.feishu_bot_enabled:
+            self.start()
+
     def _consume_loop(self) -> None:
         """消费循环：运行 lark-cli event consume，自动重启。"""
         while not self._stop_event.is_set():

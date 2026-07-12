@@ -149,7 +149,7 @@ class TestFullFlow:
                 assert list_data["data"]["list"][0]["id"] == "MP_WXS_abc123"
 
                 # Step 4: 刷新文章
-                resp = client.get("/accounts/update/MP_WXS_abc123")
+                resp = client.post("/accounts/update/MP_WXS_abc123")
                 assert resp.status_code == 200
                 assert "已触发更新" in resp.json()["data"]["message"]
                 # 验证 URL 包含 mp_id
@@ -276,8 +276,8 @@ class TestErrorRecovery:
 
         try:
             with TestClient(app, raise_server_exceptions=False) as client:
-                # 用 update 端点测试（GET /accounts/{mp_id} 无对应路由）
-                resp = client.get("/accounts/update/nonexistent")
+                # 用 update 端点测试（POST /accounts/update/{mp_id}）
+                resp = client.post("/accounts/update/nonexistent")
                 assert resp.status_code == 404
         finally:
             _restore(settings, orig_ak, orig_sk)
@@ -333,7 +333,7 @@ class TestErrorRecovery:
                     ("GET", "/accounts"),
                     ("GET", "/accounts/search/test"),
                     ("DELETE", "/accounts/fake"),
-                    ("GET", "/accounts/update/fake"),
+                    ("POST", "/accounts/update/fake"),
                 ]:
                     resp = getattr(client, method.lower())(path)
                     assert resp.status_code == 500, f"{method} {path} should be 500, got {resp.status_code}"

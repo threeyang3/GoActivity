@@ -1,11 +1,18 @@
-"""健康检查、配置诊断路由。"""
+"""健康检查、配置诊断路由。
 
+三级状态：
+- ok: 所有启用模块正常
+- degraded: 核心服务正常，但集成模块有问题
+- error: 核心服务（数据库、主服务）不可用
+"""
+
+import logging
 import shutil
 import time
 from typing import Any
 
 import requests as http_requests
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from sqlalchemy import text
 
 from app.config import get_settings
@@ -14,52 +21,94 @@ from app.schemas import DiagnosticsResponse
 from app.services.diagnostics import DiagnosticsService
 
 router = APIRouter(tags=["health"])
+logger = logging.getLogger(__name__)
 
 
-@router.get("/health")
-def health() -> dict[str, Any]:
-    """增强健康检查：检查各组件状态。"""
-    checks: dict[str, Any] = {}
-    overall_ok = True
-
-    # 1. 数据库连接
+def _check_database() -> dict[str, Any]:
+    """检查数据库连接。"""
     db = SessionLocal()
     try:
         db.execute(text("SELECT 1"))
-        checks["database"] = {"status": "ok"}
+        return {"status": "ok"}
     except Exception as exc:
-        checks["database"] = {"status": "error", "detail": str(exc)}
-        overall_ok = False
+        return {"status": "error", "detail": str(exc)[:200]}
     finally:
         db.close()
 
-    # 2. lark-cli 可用性
-    settings = get_settings()
-    cli_path = settings.feishu_cli_path
-    if shutil.which(cli_path):
-        checks["lark_cli"] = {"status": "ok", "path": cli_path}
-    else:
-        checks["lark_cli"] = {"status": "not_found", "path": cli_path}
 
-    # 3. Vision API 配置
-    if settings.vision_api_key:
-        checks["vision_api"] = {"status": "configured", "model": settings.vision_api_model}
-    else:
-        checks["vision_api"] = {"status": "not_configured"}
-
-    # 4. we-mp-rss 连通性（使用 /api/docs 端点，we-mp-rss 无独立 /health）
+def _check_we_mp_rss(settings) -> dict[str, Any]:
+    """检查 we-mp-rss 连通性。"""
     try:
         start = time.time()
-        resp = http_requests.get(f"{settings.we_mp_rss_base_url}/api/docs", timeout=2)
+        resp = http_requests.get(f"{settings.we_mp_rss_base_url}/api/docs", timeout=3)
         elapsed_ms = int((time.time() - start) * 1000)
         if resp.status_code == 200:
-            checks["we_mp_rss"] = {"status": "ok", "latency_ms": elapsed_ms}
-        else:
-            checks["we_mp_rss"] = {"status": "error", "code": resp.status_code}
+            return {"status": "ok", "latency_ms": elapsed_ms}
+        return {"status": "error", "code": resp.status_code}
     except Exception as exc:
-        checks["we_mp_rss"] = {"status": "unreachable", "detail": str(exc)[:80]}
+        return {"status": "unreachable", "detail": str(exc)[:100]}
 
-    # 5. 上次同步状态
+
+def _check_lark_cli(settings) -> dict[str, Any]:
+    """检查 lark-cli 可用性。"""
+    cli_path = settings.feishu_cli_path
+    if shutil.which(cli_path):
+        return {"status": "ok", "path": cli_path}
+    return {"status": "not_found", "path": cli_path}
+
+
+def _check_ocr(settings) -> dict[str, Any]:
+    """检查 OCR Provider 状态。"""
+    provider = settings.ocr_provider
+    if provider == "disabled":
+        return {"status": "disabled", "provider": provider}
+    if provider == "mock":
+        return {"status": "mock", "provider": provider}
+    if provider == "rapid":
+        try:
+            import rapidocr_onnxruntime  # noqa: F401
+            return {"status": "ok", "provider": provider}
+        except ImportError:
+            return {"status": "error", "provider": provider, "detail": "rapidocr_onnxruntime 未安装"}
+    if provider in ("openai", "openai_compatible"):
+        if not settings.ocr_api_key:
+            return {"status": "not_configured", "provider": provider, "detail": "缺少 OCR_API_KEY"}
+        return {"status": "configured", "provider": provider, "model": settings.ocr_api_model}
+    return {"status": "unknown", "provider": provider}
+
+
+def _check_vision(settings) -> dict[str, Any]:
+    """检查 Vision Provider 状态。"""
+    provider = settings.vision_api_provider
+    if provider == "mock":
+        return {"status": "mock", "provider": provider}
+    if provider in ("openai", "openai_compatible"):
+        if not settings.vision_api_key:
+            return {"status": "not_configured", "provider": provider, "detail": "缺少 VISION_API_KEY"}
+        return {"status": "configured", "provider": provider, "model": settings.vision_api_model}
+    if provider == "textai":
+        if not settings.vision_api_key:
+            return {"status": "not_configured", "provider": provider, "detail": "缺少 VISION_API_KEY"}
+        return {"status": "configured", "provider": provider, "model": settings.vision_api_model}
+    return {"status": "unknown", "provider": provider}
+
+
+def _check_text_ai(settings) -> dict[str, Any]:
+    """检查文本 AI Provider 状态。"""
+    provider = settings.text_ai_provider
+    if provider == "disabled":
+        return {"status": "disabled", "provider": provider}
+    if provider == "mock":
+        return {"status": "mock", "provider": provider}
+    if provider in ("openai", "openai_compatible"):
+        if not settings.text_ai_api_key:
+            return {"status": "not_configured", "provider": provider, "detail": "缺少 TEXT_AI_API_KEY"}
+        return {"status": "configured", "provider": provider, "model": settings.text_ai_api_model}
+    return {"status": "unknown", "provider": provider}
+
+
+def _check_last_sync() -> dict[str, Any]:
+    """检查最近一次同步状态。"""
     try:
         from app.services.sync_run_service import SyncRunService
 
@@ -67,19 +116,123 @@ def health() -> dict[str, Any]:
         try:
             latest = SyncRunService(db).latest_run("auto-sync")
             if latest:
-                checks["last_sync"] = {
+                return {
                     "status": latest.status,
                     "at": latest.started_at.isoformat() if latest.started_at else None,
+                    "error": latest.error_message[:200] if latest.error_message else None,
                 }
-            else:
-                checks["last_sync"] = {"status": "no_runs"}
+            return {"status": "no_runs"}
         finally:
             db.close()
     except Exception:
-        checks["last_sync"] = {"status": "unknown"}
+        return {"status": "unknown"}
+
+
+def _check_storage(settings) -> dict[str, Any]:
+    """检查存储目录。"""
+    storage = settings.storage_dir
+    if storage.exists():
+        return {"status": "ok", "path": str(storage)}
+    return {"status": "missing", "path": str(storage)}
+
+
+def _check_scheduler(obj: Any, name: str) -> dict[str, Any]:
+    if obj is None:
+        return {"status": "unknown", "detail": f"{name} 未初始化"}
+    scheduler = getattr(obj, "scheduler", None)
+    if scheduler is None:
+        return {"status": "unknown", "detail": f"{name} 无 scheduler"}
+    return {"status": "ok" if scheduler.running else "error"}
+
+
+def _check_config(settings) -> dict[str, Any]:
+    warnings = []
+    if settings.allow_lan_access and not settings.admin_token:
+        warnings.append("启用局域网访问但未配置 admin_token")
+    if settings.feishu_provider == "lark_cli" and not settings.feishu_cli_path:
+        warnings.append("缺少 feishu_cli_path")
+    return {"status": "ok" if not warnings else "degraded", "warnings": warnings}
+
+
+@router.get("/health")
+def health(request: Request) -> dict[str, Any]:
+    """增强健康检查：检查各组件状态，返回三级状态。"""
+    settings = get_settings()
+    checks: dict[str, Any] = {}
+    has_error = False
+    has_degraded = False
+
+    # 核心检查：数据库
+    checks["database"] = _check_database()
+    if checks["database"]["status"] == "error":
+        has_error = True
+
+    # 核心检查：存储目录
+    checks["storage"] = _check_storage(settings)
+    if checks["storage"]["status"] == "missing":
+        has_error = True
+
+    # 集成检查：we-mp-rss
+    checks["we_mp_rss"] = _check_we_mp_rss(settings)
+    if checks["we_mp_rss"]["status"] == "error":
+        has_degraded = True
+    elif checks["we_mp_rss"]["status"] == "unreachable":
+        has_degraded = True
+
+    # 集成检查：lark-cli
+    checks["lark_cli"] = _check_lark_cli(settings)
+    if checks["lark_cli"]["status"] == "not_found":
+        has_degraded = True
+
+    # 集成检查：OCR
+    checks["ocr"] = _check_ocr(settings)
+    if checks["ocr"]["status"] == "error":
+        has_degraded = True
+
+    # 集成检查：Vision
+    checks["vision"] = _check_vision(settings)
+    if checks["vision"]["status"] == "error":
+        has_degraded = True
+
+    # 集成检查：文本 AI
+    checks["text_ai"] = _check_text_ai(settings)
+    if checks["text_ai"]["status"] == "error":
+        has_degraded = True
+
+    # 集成检查：最近同步
+    checks["last_sync"] = _check_last_sync()
+    if checks["last_sync"].get("status") == "failed":
+        has_degraded = True
+
+    checks["config"] = _check_config(settings)
+    if checks["config"]["status"] == "degraded":
+        has_degraded = True
+
+    checks["auto_sync_scheduler"] = _check_scheduler(getattr(request.app.state, "auto_sync", None), "auto_sync")
+    if checks["auto_sync_scheduler"]["status"] == "error":
+        has_degraded = True
+
+    checks["report_scheduler"] = _check_scheduler(getattr(request.app.state, "report_scheduler", None), "report_scheduler")
+    if checks["report_scheduler"]["status"] == "error":
+        has_degraded = True
+
+    bot_consumer = getattr(request.app.state, "bot_consumer", None)
+    checks["bot_consumer"] = {
+        "status": "disabled" if not settings.feishu_bot_enabled else ("ok" if getattr(bot_consumer, "running", False) else "error")
+    }
+    if checks["bot_consumer"]["status"] == "error":
+        has_degraded = True
+
+    # 确定总体状态
+    if has_error:
+        overall = "error"
+    elif has_degraded:
+        overall = "degraded"
+    else:
+        overall = "ok"
 
     return {
-        "status": "ok" if overall_ok else "degraded",
+        "status": overall,
         "checks": checks,
     }
 

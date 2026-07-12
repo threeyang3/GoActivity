@@ -39,11 +39,11 @@ Miniconda 路径（当前机器）：`D:\miniconda3`
 
 ### 一键启动（手动）
 
-推荐使用系统托盘管理器（`gui_manager.py`），可同时管理两个服务：
+推荐使用新的桌面管理器（`python -m desktop.app`），可同时管理两个服务：
 
 ```powershell
 cd E:\cctry\GoActivity
-python gui_manager.py
+python -m desktop.app
 ```
 
 托盘程序会自动启动 GoActivity（端口 8000）和 we-mp-rss（端口 8001），并在托盘图标上显示双状态指示灯。
@@ -143,7 +143,7 @@ http://localhost:8001
 - 接收 `we-mp-rss` WebHook。
 - 保存原始 payload、Markdown、处理后 Markdown。
 - 下载 Markdown/HTML 中的图片并改写本地路径。
-- 支持 `mock`、`disabled`、`rapid`（本地）、`openai` 四种 OCR provider；`mock`、`openai`、`textai` 三种 Vision provider。当前使用方案C：本地 RapidOCR + 智谱 AI GLM-4.6V 多模态 Vision。
+- 支持 `mock`、`disabled`、`rapid`（本地）、`openai_compatible` 四种 OCR provider；Vision 与文本 AI 已分离配置，兼容旧 `textai` 视觉路径。
 - 通过 `FeishuAdapter` 调用 `lark-cli`、兼容飞书 CLI 或飞书 OpenAPI；默认 `FEISHU_DRY_RUN=true`，不会真实写飞书。
 - 提供配置自检、同步日志、同步任务状态接口，便于排障。
 - 提供结构化日报/周报（按时间筛选、分类统计、活动列表），支持发送到飞书群/用户。
@@ -159,6 +159,8 @@ http://localhost:8001
 - 飞书机器人：自然语言查询、速率限制、对话历史。
 - CI pipeline（GitHub Actions：pytest + import check）。
 - Web 管理后台：统计仪表板、事件列表、同步日志、快捷操作、活动详情、搜索、时间筛选、待办事项（editorial campus bulletin 设计风格）。
+- Web 管理后台新增“运行概览 / 详细设置”双层结构：总览页优先展示链路健康、今日/未来活动、最近同步；系统页拆分为运行概览与详细设置标签，避免单页过长。
+- 公众号管理页支持真实账号卡片展示：兼容 we-mp-rss 的 `data.list` 返回结构，展示头像、简介、更新时间与操作按钮。
 - 系统托盘管理器：同时管理 GoActivity + WeRSS 双服务，独立启停/重启，独立开机自启（注册表），双状态指示灯托盘图标，统一状态窗口。
 - 同步进度 UI：触发同步后弹出进度窗口，轮询显示拉取/抽取/同步阶段，完成后展示结果统计。
 - SQLite WAL 模式：提升并发读写性能。
@@ -212,7 +214,7 @@ http://localhost:8001
 - `GET /accounts/search/{kw}` — 搜索公众号（微信搜索）
 - `POST /accounts` — 添加公众号（代理到 we-mp-rss）
 - `DELETE /accounts/{mp_id}` — 删除公众号
-- `GET /accounts/update/{mp_id}` — 触发公众号文章更新
+- `POST /accounts/update/{mp_id}` — 触发公众号文章更新
 
 ## 真实接入配置
 
@@ -263,14 +265,14 @@ VISION_API_TIMEOUT_SECONDS=60
 
 **方案B：全多模态 API**（效果最好，但贵且慢）
 ```env
-OCR_PROVIDER=openai
-VISION_API_PROVIDER=openai
+OCR_PROVIDER=openai_compatible
+VISION_API_PROVIDER=openai_compatible
 ```
 
 **方案A：本地 OCR + 文本 AI**（成本最低，但丢失视觉信息）
 ```env
 OCR_PROVIDER=rapid
-VISION_API_PROVIDER=textai
+TEXT_AI_PROVIDER=openai_compatible
 ```
 
 | 方案 | 每篇成本 | 速度 | 效果 |

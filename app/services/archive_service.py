@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.config import get_settings
 from app.models import Article, Event, Image
 from app.utils.constants import EventStatus, RetentionDecision
-from app.utils.time import utcnow
+from app.utils.time import from_storage_datetime, parse_datetime_str, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -171,12 +171,12 @@ class ArchiveService:
             return False
 
         # 尝试解析结束时间
-        end_time = event.end_time or event.start_time
-        if not end_time:
-            return False
-
-        from app.utils.time import parse_datetime_str
-        end_at = parse_datetime_str(end_time)
+        end_at = from_storage_datetime(event.end_at, event.timezone or "Asia/Shanghai")
+        if not end_at:
+            end_time = event.end_time or event.start_time
+            if not end_time:
+                return False
+            end_at = parse_datetime_str(end_time)
         if not end_at:
             return False
 

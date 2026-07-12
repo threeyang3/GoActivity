@@ -26,6 +26,9 @@ class ReportScheduler:
 
     def start(self) -> None:
         """启动定时任务调度器。"""
+        self.settings = get_settings()
+        if self.scheduler.running:
+            self.scheduler.remove_all_jobs()
         # 每天发日报
         if self.settings.feishu_report_daily_enabled:
             daily_cron = self.settings.feishu_report_daily_cron
@@ -64,13 +67,20 @@ class ReportScheduler:
         else:
             logger.info("Weekly report disabled")
 
-        self.scheduler.start()
+        if not self.scheduler.running:
+            self.scheduler.start()
         logger.info("Report scheduler started")
 
     def shutdown(self) -> None:
         """关闭定时任务调度器。"""
-        self.scheduler.shutdown()
-        logger.info("Report scheduler stopped")
+        if self.scheduler.running:
+            self.scheduler.shutdown()
+            logger.info("Report scheduler stopped")
+
+    def reload_settings(self) -> None:
+        """重新加载配置并重建任务。"""
+        self.settings = get_settings()
+        self.start()
 
     def _send_report(self, report_type: str) -> None:
         """发送报告（日报或周报）。"""
@@ -96,4 +106,3 @@ class ReportScheduler:
     def _send_weekly_report(self) -> None:
         """发送周报。"""
         self._send_report("weekly")
-

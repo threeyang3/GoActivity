@@ -1,22 +1,64 @@
-"""仪表板 API 路由。
-
-提供 Web 管理界面所需的数据接口。
-"""
+"""仪表板 API 路由。"""
 
 import logging
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session, joinedload
 
+from app.auth import require_admin
 from app.config import get_settings
 from app.db import get_db
 from app.models import Article, Event, SyncLog, SyncRun
 from app.utils.constants import EventStatus
+from app.utils.time import SHANGHAI_TZ, format_display_datetime, from_storage_datetime, parse_datetime_str
 
 router = APIRouter(tags=["dashboard"])
 logger = logging.getLogger(__name__)
+
+
+def _event_start_dt(event: Event) -> datetime | None:
+    return from_storage_datetime(event.start_at, event.timezone or "Asia/Shanghai") or parse_datetime_str(event.start_time)
+
+
+def _event_end_dt(event: Event) -> datetime | None:
+    return from_storage_datetime(event.end_at, event.timezone or "Asia/Shanghai") or parse_datetime_str(event.end_time)
+
+
+def _event_start_text(event: Event) -> str:
+    return format_display_datetime(event.start_at, event.timezone or "Asia/Shanghai") or event.start_time
+
+
+def _event_end_text(event: Event) -> str:
+    return format_display_datetime(event.end_at, event.timezone or "Asia/Shanghai") or event.end_time
+
+
+def _in_time_range(event: Event, time_range: str | None) -> bool:
+    if not time_range:
+        return True
+    now = datetime.now(SHANGHAI_TZ)
+    start_dt = _event_start_dt(event)
+    if time_range == "past":
+        return event.event_time_status == "past"
+    if not start_dt:
+        return False
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if time_range == "today":
+        return today_start <= start_dt < today_start + timedelta(days=1)
+    if time_range == "week":
+        return today_start <= start_dt < today_start + timedelta(days=7)
+    if time_range == "month":
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if month_start.month == 12:
+            month_end = month_start.replace(year=month_start.year + 1, month=1)
+        else:
+            month_end = month_start.replace(month=month_start.month + 1)
+        return month_start <= start_dt < month_end
+    if time_range == "upcoming":
+        return start_dt >= now and event.event_time_status == "upcoming"
+    return True
 
 
 @router.get("/dashboard/stats")
@@ -138,43 +180,12 @@ def list_events(
     if activity_kind:
         query = query.filter(Event.activity_kind == activity_kind)
 
-    # 时间范围筛选
-    now = datetime.now(SHANGHAI_TZ)
-    if time_range == "today":
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        today_end = today_start + timedelta(days=1)
-        query = query.filter(
-            Event.start_time >= today_start.strftime("%Y-%m-%d"),
-            Event.start_time < today_end.strftime("%Y-%m-%d"),
-        )
-    elif time_range == "week":
-        week_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        week_end = week_start + timedelta(days=7)
-        query = query.filter(
-            Event.start_time >= week_start.strftime("%Y-%m-%d"),
-            Event.start_time < week_end.strftime("%Y-%m-%d"),
-        )
-    elif time_range == "month":
-        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        if month_start.month == 12:
-            month_end = month_start.replace(year=month_start.year + 1, month=1)
-        else:
-            month_end = month_start.replace(month=month_start.month + 1)
-        query = query.filter(
-            Event.start_time >= month_start.strftime("%Y-%m-%d"),
-            Event.start_time < month_end.strftime("%Y-%m-%d"),
-        )
-    elif time_range == "upcoming":
-        query = query.filter(
-            Event.start_time >= now.strftime("%Y-%m-%d %H:%M:%S"),
-            Event.event_time_status == "upcoming",
-        )
-    elif time_range == "past":
-        query = query.filter(Event.event_time_status == "past")
-
-    total = query.count()
+    events = query.all()
+    events = [event for event in events if _in_time_range(event, time_range)]
+    events.sort(key=lambda item: _event_start_dt(item) or datetime.max.replace(tzinfo=SHANGHAI_TZ))
+    total = len(events)
     offset = (page - 1) * page_size
-    events = query.order_by(Event.start_time.asc()).offset(offset).limit(page_size).all()
+    events = events[offset:offset + page_size]
 
     return {
         "total": total,
@@ -189,8 +200,8 @@ def list_events(
                 "category_1": e.category_1,
                 "category_2": e.category_2,
                 "activity_kind": e.activity_kind,
-                "start_time": e.start_time,
-                "end_time": e.end_time,
+                "start_time": _event_start_text(e),
+                "end_time": _event_end_text(e),
                 "location": e.location,
                 "organizer": e.organizer,
                 "speaker": e.speaker,
@@ -234,8 +245,12 @@ def get_event_detail(event_id: str, db: Session = Depends(get_db)) -> dict[str, 
         "category_2": event.category_2,
         "activity_kind": event.activity_kind,
         "activity_kind_reason": event.activity_kind_reason,
-        "start_time": event.start_time,
-        "end_time": event.end_time,
+        "start_time": _event_start_text(event),
+        "end_time": _event_end_text(event),
+        "start_at": format_display_datetime(event.start_at, event.timezone or "Asia/Shanghai"),
+        "end_at": format_display_datetime(event.end_at, event.timezone or "Asia/Shanghai"),
+        "timezone": event.timezone,
+        "raw_time_text": event.raw_time_text,
         "location": event.location,
         "speaker": event.speaker,
         "organizer": event.organizer,
@@ -342,27 +357,25 @@ def search_events(
 @router.get("/dashboard/today")
 def get_today_events(db: Session = Depends(get_db)) -> dict[str, Any]:
     """获取今日活动。"""
-    from datetime import datetime, timedelta
-    from app.utils.time import SHANGHAI_TZ
-
     now = datetime.now(SHANGHAI_TZ)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
 
     # 查找今日活动（开始时间在今天范围内）
-    events = db.query(Event).filter(
-        Event.status.notin_(EventStatus.TERMINAL_STATUSES),
-        Event.start_time >= today_start.strftime("%Y-%m-%d"),
-        Event.start_time < today_end.strftime("%Y-%m-%d"),
-    ).order_by(Event.start_time.asc()).all()
+    events = [
+        event for event in db.query(Event).filter(Event.status.notin_(EventStatus.TERMINAL_STATUSES)).all()
+        if _event_start_dt(event) and today_start <= _event_start_dt(event) < today_end
+    ]
+    events.sort(key=lambda item: _event_start_dt(item) or datetime.max.replace(tzinfo=SHANGHAI_TZ))
 
     # 查找即将到来的活动（未来 7 天）
     week_end = today_start + timedelta(days=7)
-    upcoming_events = db.query(Event).filter(
-        Event.status.notin_(EventStatus.TERMINAL_STATUSES),
-        Event.start_time >= today_end.strftime("%Y-%m-%d"),
-        Event.start_time < week_end.strftime("%Y-%m-%d"),
-    ).order_by(Event.start_time.asc()).limit(10).all()
+    upcoming_events = [
+        event for event in db.query(Event).filter(Event.status.notin_(EventStatus.TERMINAL_STATUSES)).all()
+        if _event_start_dt(event) and today_end <= _event_start_dt(event) < week_end
+    ]
+    upcoming_events.sort(key=lambda item: _event_start_dt(item) or datetime.max.replace(tzinfo=SHANGHAI_TZ))
+    upcoming_events = upcoming_events[:10]
 
     return {
         "today": [
@@ -370,8 +383,8 @@ def get_today_events(db: Session = Depends(get_db)) -> dict[str, Any]:
                 "event_id": e.event_id,
                 "title": e.title or "(无标题)",
                 "category_1": e.category_1,
-                "start_time": e.start_time,
-                "end_time": e.end_time,
+                "start_time": _event_start_text(e),
+                "end_time": _event_end_text(e),
                 "location": e.location,
                 "speaker": e.speaker,
                 "status": e.status,
@@ -383,7 +396,7 @@ def get_today_events(db: Session = Depends(get_db)) -> dict[str, Any]:
                 "event_id": e.event_id,
                 "title": e.title or "(无标题)",
                 "category_1": e.category_1,
-                "start_time": e.start_time,
+                "start_time": _event_start_text(e),
                 "location": e.location,
                 "status": e.status,
             }
@@ -514,7 +527,7 @@ def list_sync_runs(
 
 
 @router.get("/dashboard/feishu-link")
-def get_feishu_link() -> dict[str, Any]:
+def get_feishu_link(_auth: None = Depends(require_admin)) -> dict[str, Any]:
     """获取飞书多维表格链接。"""
     settings = get_settings()
     app_token = settings.feishu_bitable_app_token
@@ -531,8 +544,6 @@ def get_feishu_link() -> dict[str, Any]:
     return {
         "configured": True,
         "url": url,
-        "app_token": app_token,
-        "table_id": table_id,
     }
 
 
@@ -551,8 +562,8 @@ def get_pipeline_status(db: Session = Depends(get_db)) -> dict[str, Any]:
             f"{settings.we_mp_rss_base_url}/api/docs", timeout=3
         )
         rss_online = resp.status_code == 200
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("we-mp-rss health check failed: %s", exc)
 
     # 2. 最新文章入库时间
     latest_article = (
@@ -732,21 +743,22 @@ def get_history(
 
     if month:
         # month format: "2026-06"
-        query = query.filter(Event.start_time.like(f"{month}%"))
-
-    total = query.count()
+        events_for_month = query.all()
+        query = None
+        events_for_month = [event for event in events_for_month if _event_start_text(event).startswith(f"{month}")]
+    else:
+        events_for_month = query.all()
+    events_for_month.sort(key=lambda item: _event_start_dt(item) or datetime.min.replace(tzinfo=SHANGHAI_TZ), reverse=True)
+    total = len(events_for_month)
     offset = (page - 1) * page_size
-    events = query.order_by(Event.start_time.desc()).offset(offset).limit(page_size).all()
+    events = events_for_month[offset:offset + page_size]
 
     # 获取可用月份列表
     months = (
-        db.query(Event.start_time)
-        .filter(Event.start_time != "")
-        .distinct()
-        .all()
+        db.query(Event).filter(Event.start_time != "").all()
     )
     available_months = sorted(
-        set(m[0][:7] for m in months if m[0] and len(m[0]) >= 7),
+        set(_event_start_text(event)[:7] for event in months if _event_start_text(event) and len(_event_start_text(event)) >= 7),
         reverse=True,
     )
 
@@ -762,8 +774,8 @@ def get_history(
                 "event_id": e.event_id,
                 "title": e.title or "(无标题)",
                 "category_1": e.category_1,
-                "start_time": e.start_time,
-                "end_time": e.end_time,
+                "start_time": _event_start_text(e),
+                "end_time": _event_end_text(e),
                 "location": e.location,
                 "status": e.status,
                 "event_time_status": e.event_time_status,

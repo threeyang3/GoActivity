@@ -60,6 +60,10 @@ class Event(Base):
     category_2: Mapped[str] = mapped_column(String(128), default="")
     start_time: Mapped[str] = mapped_column(String(128), default="", index=True)
     end_time: Mapped[str] = mapped_column(String(128), default="")
+    start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai")
+    raw_time_text: Mapped[str] = mapped_column(Text, default="")
     location: Mapped[str] = mapped_column(String(512), default="")
     speaker: Mapped[str] = mapped_column(String(512), default="")
     organizer: Mapped[str] = mapped_column(String(512), default="")
@@ -141,3 +145,16 @@ class SyncRun(Base):
     result_preview: Mapped[str] = mapped_column(Text, default="[]")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    value_type: Mapped[str] = mapped_column(String(32), default="string")
+    category: Mapped[str] = mapped_column(String(64), default="general")
+    is_secret: Mapped[bool] = mapped_column(Boolean, default=False)
+    requires_restart: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

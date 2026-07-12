@@ -39,8 +39,8 @@ As of the latest verified run (2026-06-25):
 - all local `Event` rows are synced to Feishu
 - poster images are uploaded as real Feishu attachments
 - `event.feishu_record_id` is persisted locally and reused on update
-- Alembic migration system is active (4 migrations)
-- 162 tests passing
+- Alembic migration system is active (6 migrations in repository, including runtime settings and canonical time fields)
+- 189 tests passing
 - Event deduplication via `dedup_key` field
 
 ## Project Structure
@@ -61,9 +61,11 @@ As of the latest verified run (2026-06-25):
 - `app/utils/`
   Shared utilities: `time.py` (utcnow, parse_datetime_str, parse_to_epoch), `constants.py` (EventStatus, RetentionDecision, EventTimeStatus, ACTIVITY_KIND_LABELS), `lark_cli.py` (lark-cli command building, run_cli_command), `ids.py`, `jsonx.py`, `cron.py` (shared `parse_cron`).
 - `app/static/`
-  Static files for Web management UI. `index.html` is the dashboard (editorial campus bulletin design).
+  Static files for Web management UI. Current dashboard uses split `css/` + `js/` ES modules.
+- `desktop/`
+  Current PySide6 desktop manager entry (`python -m desktop.app`) plus service controller and single-instance logic.
 - `gui_manager.py`
-  System tray application. Manages both GoActivity (port 8000) and we-mp-rss (port 8001). Creates tray icon, handles service lifecycle, autostart registry, and status window.
+  Legacy tray manager, retained for compatibility but no longer the preferred entry.
 - `generate_icon.py`
   Generates `app_icon.ico` with dual status indicators. Run `python generate_icon.py` to regenerate.
 - `start_service.py`
@@ -266,7 +268,7 @@ GET  /accounts                    # 列出已订阅公众号
 GET  /accounts/search/{kw}        # 搜索公众号
 POST /accounts                    # 添加公众号
 DELETE /accounts/{mp_id}          # 删除公众号
-GET  /accounts/update/{mp_id}     # 触发公众号文章更新
+POST /accounts/update/{mp_id}     # 触发公众号文章更新
 POST /events/{event_id}/participate  # 标记/取消参与
 POST /events/{event_id}/archive      # 手动归档
 POST /events/{event_id}/unarchive    # 取消归档

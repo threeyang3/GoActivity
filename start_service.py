@@ -6,12 +6,14 @@ GoActivity 服务启动脚本
 import argparse
 import logging
 import os
-import sys
 import signal
 import subprocess
+import sys
 import time
 import socket
 from pathlib import Path
+
+from app.config import get_settings
 
 # 设置工作目录为脚本所在目录
 os.chdir(Path(__file__).parent)
@@ -81,6 +83,7 @@ class GoActivityService:
     def __init__(self):
         self.process = None
         self.running = False
+        self._stdout_handle = None
         # 确保日志目录存在
         os.makedirs('logs', exist_ok=True)
 
@@ -112,10 +115,11 @@ class GoActivityService:
         ]
 
         try:
+            self._stdout_handle = open('logs/service_stdout.log', 'a', encoding='utf-8')
             # 启动 uvicorn 进程
             self.process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
+                stdout=self._stdout_handle,
                 stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
             )
@@ -148,6 +152,9 @@ class GoActivityService:
                 logger.warning("服务未响应，强制终止...")
                 self.process.kill()
                 self.process.wait()
+            if self._stdout_handle:
+                self._stdout_handle.close()
+                self._stdout_handle = None
 
     def run_forever(self, host='127.0.0.1', port=8000):
         """持续运行服务（阻塞）"""
@@ -230,11 +237,14 @@ def install_service():
     script_path = Path(__file__).absolute()
     python_path = sys.executable
 
+    settings = get_settings()
+    service_host = resolve_bind_host(settings)
+
     # 安装服务
     cmd = [
         nssm_path, 'install', service_name,
         python_path,
-        f'"{script_path}" --start --host 0.0.0.0 --port 8000'
+        f'"{script_path}" --start --host {service_host} --port {settings.app_port}'
     ]
 
     try:
@@ -341,6 +351,13 @@ def find_nssm():
             return str(path)
 
     return None
+
+
+def resolve_bind_host(settings) -> str:
+    """根据安全配置决定服务监听地址。"""
+    if settings.allow_lan_access and settings.admin_token:
+        return "0.0.0.0"
+    return "127.0.0.1"
 
 
 if __name__ == '__main__':

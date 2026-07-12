@@ -3,6 +3,7 @@
 from app.models import Event, SyncRun
 from app.schemas import EventOut, SyncRunOut
 from app.utils.jsonx import loads_list
+from app.utils.time import format_display_datetime
 
 
 def _s(v: str | None) -> str:
@@ -19,6 +20,10 @@ def event_to_out(event: Event) -> EventOut:
         category_2=event.category_2,
         start_time=event.start_time,
         end_time=event.end_time,
+        start_at=format_display_datetime(event.start_at, event.timezone or "Asia/Shanghai"),
+        end_at=format_display_datetime(event.end_at, event.timezone or "Asia/Shanghai"),
+        timezone=_s(event.timezone) or "Asia/Shanghai",
+        raw_time_text=_s(event.raw_time_text),
         location=_s(event.location),
         speaker=_s(event.speaker),
         organizer=_s(event.organizer),

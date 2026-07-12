@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 # revision identifiers, used by Alembic.
@@ -20,11 +21,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add run_id column to sync_logs table."""
+    inspector = inspect(op.get_bind())
+    columns = {column["name"] for column in inspector.get_columns("sync_logs")}
+    indexes = {index["name"] for index in inspector.get_indexes("sync_logs")}
     with op.batch_alter_table('sync_logs', schema=None) as batch_op:
-        batch_op.add_column(
-            sa.Column('run_id', sa.String(length=128), nullable=False, server_default=''),
-        )
-        batch_op.create_index(batch_op.f('ix_sync_logs_run_id'), ['run_id'], unique=False)
+        if 'run_id' not in columns:
+            batch_op.add_column(
+                sa.Column('run_id', sa.String(length=128), nullable=False, server_default=''),
+            )
+        if batch_op.f('ix_sync_logs_run_id') not in indexes:
+            batch_op.create_index(batch_op.f('ix_sync_logs_run_id'), ['run_id'], unique=False)
 
 
 def downgrade() -> None:

@@ -6,6 +6,7 @@
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,14 +28,6 @@ class ViewConfig:
     visible_fields: list[str] | None = None
 
 
-# ── 字段分组（按阅读和管理目的组织） ──
-_CORE = ["标题", "活动类型", "一级分类", "开始时间", "结束时间", "活动地点", "主办方"]
-_REGISTRATION = ["报名方式", "报名截止", "报名链接", "人数限制"]
-_PERFORMANCE = ["票价信息", "演出类型", "演出作品", "演出团体"]
-_LECTURE = ["嘉宾", "主讲人头衔", "讲座主题", "讲座系列"]
-_COMPETITION = ["比赛名称", "比赛类型", "截止时间", "奖项设置"]
-
-
 VIEW_CONFIGS: list[ViewConfig] = [
     ViewConfig(
         name="全部活动",
@@ -51,10 +44,9 @@ VIEW_CONFIGS: list[ViewConfig] = [
         },
         sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
         visible_fields=[
-            *_CORE,
-            "报名方式", "报名截止", "票价信息",
-            "状态", "时间状态", "海报附件",
-            "公众号", "原文链接", "摘要",
+            "标题", "活动类型", "开始时间", "结束时间", "活动地点",
+            "主办方", "嘉宾", "报名方式", "报名截止", "票价信息",
+            "状态", "时间状态", "海报附件", "公众号", "原文链接", "摘要",
         ],
     ),
     ViewConfig(
@@ -72,7 +64,7 @@ VIEW_CONFIGS: list[ViewConfig] = [
         sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
         visible_fields=[
             "标题", "开始时间", "结束时间", "活动地点", "主办方",
-            "票价信息", "报名方式", "报名截止", "海报附件", "原文链接", "公众号",
+            "票价信息", "报名方式", "报名截止", "海报附件", "原文链接", "公众号", "时间状态",
         ],
     ),
     ViewConfig(
@@ -90,8 +82,8 @@ VIEW_CONFIGS: list[ViewConfig] = [
         sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
         visible_fields=[
             "标题", "开始时间", "结束时间", "活动地点",
-            *_PERFORMANCE,
-            "主办方", "原文链接", "海报附件", "公众号", "摘要",
+            "票价信息", "演出类型", "演出作品", "演出团体",
+            "主办方", "海报附件", "原文链接", "公众号", "摘要",
         ],
     ),
     ViewConfig(
@@ -108,8 +100,8 @@ VIEW_CONFIGS: list[ViewConfig] = [
         sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
         visible_fields=[
             "标题", "开始时间", "结束时间", "活动地点",
-            *_LECTURE,
-            "主办方", "报名方式", "原文链接", "海报附件", "摘要",
+            "嘉宾", "主讲人头衔", "讲座主题", "讲座系列",
+            "主办方", "报名方式", "海报附件", "原文链接", "公众号", "摘要",
         ],
     ),
     ViewConfig(
@@ -125,8 +117,8 @@ VIEW_CONFIGS: list[ViewConfig] = [
         sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
         visible_fields=[
             "标题", "比赛名称", "比赛类型", "截止时间",
-            "开始时间", "活动地点", "主办方", "报名方式",
-            "报名截止", "奖项设置", "原文链接", "海报附件", "摘要",
+            "奖项设置", "报名截止", "报名链接", "开始时间",
+            "活动地点", "主办方", "海报附件", "原文链接", "公众号", "摘要",
         ],
     ),
     ViewConfig(
@@ -142,8 +134,8 @@ VIEW_CONFIGS: list[ViewConfig] = [
         sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
         visible_fields=[
             "标题", "活动类型", "开始时间", "活动地点", "主办方",
-            *_REGISTRATION,
-            "原文链接", "海报附件", "公众号", "摘要",
+            "报名方式", "报名截止", "报名链接", "人数限制",
+            "海报附件", "原文链接", "公众号", "摘要",
         ],
     ),
     ViewConfig(
@@ -158,26 +150,24 @@ VIEW_CONFIGS: list[ViewConfig] = [
         },
         sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
         visible_fields=[
-            "标题", "开始时间", "活动地点", "主办方",
-            "报名方式", "票价信息", "原文链接", "海报附件", "状态",
+            "标题", "活动类型", "开始时间", "活动地点", "主办方",
+            "嘉宾", "报名方式", "票价信息", "海报附件", "原文链接", "状态", "时间状态",
         ],
     ),
     ViewConfig(
         name="待人工处理",
-        type="kanban",
+        type="grid",
         filter_config={
             "logic": "or",
             "conditions": [
-                ["状态", "is", "pending_ai"],
                 ["状态", "is", "failed_sync"],
                 ["状态", "is", "failed_extract"],
-                ["状态", "is", "needs_image_retry"],
             ],
         },
         group_config={"group_config": [{"field": "状态", "desc": False}]},
         visible_fields=[
             "标题", "开始时间", "活动地点", "主办方",
-            "时间状态", "置信度", "原文链接", "公众号", "关联原因", "摘要",
+            "时间状态", "置信度", "公众号", "关联原因", "原文链接", "摘要",
         ],
     ),
     ViewConfig(
@@ -194,8 +184,8 @@ VIEW_CONFIGS: list[ViewConfig] = [
         group_config={"group_config": [{"field": "公众号", "desc": False}]},
         sort_config={"sort_config": [{"field": "更新时间", "desc": True}]},
         visible_fields=[
-            "公众号", "标题", "活动类型", "开始时间",
-            "活动地点", "状态", "时间状态", "更新时间", "置信度", "原文链接",
+            "标题", "活动类型", "开始时间", "活动地点",
+            "状态", "时间状态", "更新时间", "置信度", "原文链接", "摘要",
         ],
     ),
     ViewConfig(
@@ -213,17 +203,17 @@ VIEW_CONFIGS: list[ViewConfig] = [
         sort_config={"sort_config": [{"field": "开始时间", "desc": True}]},
         visible_fields=[
             "标题", "活动类型", "开始时间", "结束时间", "活动地点",
-            "主办方", "时间状态", "公众号", "原文链接", "海报附件",
+            "主办方", "时间状态", "海报附件", "原文链接", "公众号", "摘要",
         ],
     ),
     ViewConfig(
         name="活动归档",
         type="grid",
         filter_config={"logic": "and", "conditions": [["状态", "is", "archived"]]},
-        sort_config={"sort_config": [{"field": "归档时间", "desc": True}]},
+        sort_config={"sort_config": [{"field": "开始时间", "desc": True}]},
         visible_fields=[
             "标题", "活动类型", "开始时间", "结束时间", "活动地点",
-            "主办方", "公众号", "原文链接", "归档时间", "摘要",
+            "主办方", "公众号", "原文链接", "摘要",
         ],
     ),
 ]
@@ -264,12 +254,33 @@ class FeishuViewSetupService:
 
     def _run_cli(self, command: list[str]) -> dict[str, Any]:
         """执行 lark-cli 命令并返回 JSON 结果。"""
-        result = run_cli_command(command, timeout=60)
-        if result["return_code"] != 0:
+        last_result: dict[str, Any] | None = None
+        for attempt in range(3):
+            result = run_cli_command(command, timeout=60)
+            last_result = result
+            data = result["data"] or {}
+            message_blob = f"{result.get('stdout', '')}\n{result.get('stderr', '')}"
+            error = data.get("error") or {}
+
+            if result["return_code"] == 0:
+                return data or {"raw": result["stdout"]}
+
+            if error.get("code") == 800070003 or "no operation produced" in message_blob:
+                logger.info("lark-cli no-op: %s", error.get("message", "no operation produced"))
+                return data or {"raw": result["stdout"]}
+
+            if "EOF" in message_blob and attempt < 2:
+                logger.warning("lark-cli transport EOF, retrying (%d/3)", attempt + 1)
+                continue
+
             raise RuntimeError(
                 f"lark-cli failed (rc={result['return_code']}): {result['stderr'] or result['stdout']}"
             )
-        return result["data"] or {"raw": result["stdout"]}
+
+        result = last_result or {"return_code": -1, "stderr": "unknown", "stdout": ""}
+        raise RuntimeError(
+            f"lark-cli failed (rc={result['return_code']}): {result['stderr'] or result['stdout']}"
+        )
 
     def list_views(self) -> dict[str, str]:
         """获取现有视图列表，返回 {视图名: 视图ID}。"""
@@ -286,6 +297,50 @@ class FeishuViewSetupService:
         views = data.get("data", {}).get("views", [])
         return {view["name"]: view["id"] for view in views}
 
+    def get_view(self, view_id: str) -> dict[str, Any]:
+        """获取单个视图详情�?"""
+        command = [
+            *self._command_prefix,
+            "base",
+            "+view-get",
+            "--as", self.settings.feishu_cli_as,
+            "--base-token", self.settings.feishu_bitable_app_token,
+            "--table-id", self.settings.feishu_bitable_table_id,
+            "--view-id", view_id,
+            "--format", "json",
+        ]
+        return self._run_cli(command).get("data", {}).get("view", {})
+
+    def delete_view(self, view_id: str) -> None:
+        """删除单个视图�?"""
+        command = [
+            *self._command_prefix,
+            "base",
+            "+view-delete",
+            "--yes",
+            "--as", self.settings.feishu_cli_as,
+            "--base-token", self.settings.feishu_bitable_app_token,
+            "--table-id", self.settings.feishu_bitable_table_id,
+            "--view-id", view_id,
+            "--format", "json",
+        ]
+        self._run_cli(command)
+
+    def get_visible_fields(self, view_id: str) -> list[str]:
+        """读取当前视图的可见字段顺序�?"""
+        command = [
+            *self._command_prefix,
+            "base",
+            "+view-get-visible-fields",
+            "--as", self.settings.feishu_cli_as,
+            "--base-token", self.settings.feishu_bitable_app_token,
+            "--table-id", self.settings.feishu_bitable_table_id,
+            "--view-id", view_id,
+            "--format", "json",
+        ]
+        data = self._run_cli(command)
+        return data.get("data", {}).get("visible_fields", [])
+
     def create_view(self, config: ViewConfig) -> str:
         """创建单个视图，返回 view_id。"""
         payload = {"name": config.name, "type": config.type}
@@ -301,6 +356,10 @@ class FeishuViewSetupService:
         ]
         data = self._run_cli(command)
         view_id = data.get("data", {}).get("view", {}).get("view_id", "")
+        if not view_id:
+            views = data.get("data", {}).get("views", [])
+            if views:
+                view_id = views[0].get("id", "")
         if not view_id:
             raise RuntimeError(f"Failed to get view_id from response: {data}")
         return view_id
@@ -372,9 +431,31 @@ class FeishuViewSetupService:
             view_id = existing_views[config.name]
             logger.info("View %r already exists (id=%s), updating config", config.name, view_id)
             try:
+                live_view = self.get_view(view_id)
+                if live_view.get("type") != config.type:
+                    logger.info(
+                        "View %r type mismatch (%s -> %s), recreating",
+                        config.name,
+                        live_view.get("type"),
+                        config.type,
+                    )
+                    return self._recreate_view(config, view_id)
                 self._apply_view_config(view_id, config)
+                self._verify_view_config(view_id, config)
                 return ViewSetupResult(name=config.name, action="updated", view_id=view_id)
             except Exception as exc:
+                if "visible_fields mismatch" in str(exc):
+                    try:
+                        logger.warning("View %r did not apply visible fields cleanly, recreating", config.name)
+                        return self._recreate_view(config, view_id)
+                    except Exception as recreate_exc:
+                        logger.error("Failed to recreate view %r: %s", config.name, recreate_exc)
+                        return ViewSetupResult(
+                            name=config.name,
+                            action="failed",
+                            view_id=view_id,
+                            error=str(recreate_exc),
+                        )
                 logger.error("Failed to update view %r: %s", config.name, exc)
                 return ViewSetupResult(name=config.name, action="failed", view_id=view_id, error=str(exc))
 
@@ -382,10 +463,19 @@ class FeishuViewSetupService:
             view_id = self.create_view(config)
             logger.info("Created view %r (id=%s)", config.name, view_id)
             self._apply_view_config(view_id, config)
+            self._verify_view_config(view_id, config)
             return ViewSetupResult(name=config.name, action="created", view_id=view_id)
         except Exception as exc:
             logger.error("Failed to setup view %r: %s", config.name, exc)
             return ViewSetupResult(name=config.name, action="failed", error=str(exc))
+
+    def _recreate_view(self, config: ViewConfig, old_view_id: str) -> ViewSetupResult:
+        """删除旧视图后按目标配置重建�?"""
+        self.delete_view(old_view_id)
+        view_id = self.create_view(config)
+        self._apply_view_config(view_id, config)
+        self._verify_view_config(view_id, config)
+        return ViewSetupResult(name=config.name, action="updated", view_id=view_id)
 
     def _apply_view_config(self, view_id: str, config: ViewConfig) -> None:
         """应用视图配置。"""
@@ -404,6 +494,22 @@ class FeishuViewSetupService:
         if config.visible_fields:
             self.set_visible_fields(view_id, config.visible_fields)
             logger.debug("Set visible fields for view %r", config.name)
+
+    def _verify_view_config(self, view_id: str, config: ViewConfig) -> None:
+        """验证关键视图配置已经真正生效�?"""
+        if not config.visible_fields:
+            return
+
+        actual_fields = self.get_visible_fields(view_id)
+        if actual_fields != config.visible_fields:
+            time.sleep(1.0)
+            self.set_visible_fields(view_id, config.visible_fields)
+            time.sleep(1.0)
+            actual_fields = self.get_visible_fields(view_id)
+        if actual_fields != config.visible_fields:
+            raise RuntimeError(
+                f"visible_fields mismatch for {config.name}: expected {config.visible_fields}, got {actual_fields}"
+            )
 
     def setup_all_views(self, configs: list[ViewConfig] | None = None) -> SetupAllResult:
         """批量设置所有视图（幂等）。"""

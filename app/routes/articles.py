@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.auth import require_admin
 from app.db import get_db
 from app.schemas import WebhookResponse
 from app.services.article_service import ArticleService
@@ -11,6 +12,6 @@ router = APIRouter(tags=["articles"])
 
 
 @router.post("/articles/{article_id}/process-images", response_model=WebhookResponse)
-def process_images(article_id: str, db: Session = Depends(get_db)) -> WebhookResponse:
+def process_images(article_id: str, db: Session = Depends(get_db), _auth: None = Depends(require_admin)) -> WebhookResponse:
     result = ArticleService(db).process_article_images(article_id)
     return WebhookResponse(**result)

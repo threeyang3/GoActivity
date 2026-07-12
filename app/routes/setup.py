@@ -1,7 +1,8 @@
 """飞书视图设置路由。"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.auth import require_admin
 from app.schemas import FeishuViewSetupResponse, ViewSetupResultItem
 from app.services.feishu_view_setup import FeishuViewSetupService
 
@@ -9,7 +10,7 @@ router = APIRouter(tags=["setup"])
 
 
 @router.post("/setup/feishu-views", response_model=FeishuViewSetupResponse)
-def setup_feishu_views() -> FeishuViewSetupResponse:
+def setup_feishu_views(_auth: None = Depends(require_admin)) -> FeishuViewSetupResponse:
     """自动设置飞书 Bitable 视图（幂等）"""
     service = FeishuViewSetupService()
     result = service.setup_all_views()

@@ -7,25 +7,28 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.auth import require_admin
 from app.config import get_settings, validate_settings
 from app.db import init_db
 from app.exceptions import AppError, FeishuError, ProviderError, SyncError, ValidationError
 from app.logging_config import setup_logging
-from app.routes import accounts, articles, events, health, reports, setup, sync, webhooks
+from app.routes import accounts, articles, events, health, reports, settings, setup, sync, webhooks
 from app.routes.dashboard import router as dashboard_router
 from app.services.auto_sync import AutoSyncService
 from app.services.bot_consumer import BotEventConsumer
 from app.services.scheduler import ReportScheduler
+from app.services.settings_service import SettingsService
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     setup_logging()
     init_db()
+    SettingsService().apply_runtime_settings()
     # 启动时配置校验
     settings = get_settings()
     for warning in validate_settings(settings):
@@ -40,6 +43,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     bot_consumer = BotEventConsumer()
     bot_consumer.start()
     # 将实例挂到 app.state，供路由复用
+    application.state.report_scheduler = scheduler
     application.state.auto_sync = auto_sync
     application.state.bot_consumer = bot_consumer
     yield
@@ -50,8 +54,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # 关闭自动同步服务
     auto_sync.shutdown()
 
-
-app = FastAPI(title="Campus Activity Knowledge Hub", lifespan=lifespan)
+app = FastAPI(title=get_settings().app_name, lifespan=lifespan)
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +124,9 @@ async def request_id_middleware(request: Request, call_next):
 @app.get("/bot/status")
 def bot_status() -> dict[str, Any]:
     """飞书机器人运行状态。"""
-    consumer: BotEventConsumer = app.state.bot_consumer
+    consumer: BotEventConsumer | None = getattr(app.state, "bot_consumer", None)
+    if consumer is None:
+        return {"enabled": False, "running": False}
     return {
         "enabled": consumer.running or False,
         "running": consumer.running,
@@ -129,9 +134,11 @@ def bot_status() -> dict[str, Any]:
 
 
 @app.post("/sync/auto")
-def trigger_auto_sync() -> dict[str, Any]:
+def trigger_auto_sync(_auth: None = Depends(require_admin)) -> dict[str, Any]:
     """手动触发一次自动同步（非阻塞，后台执行）"""
-    service: AutoSyncService = app.state.auto_sync
+    service: AutoSyncService | None = getattr(app.state, "auto_sync", None)
+    if service is None:
+        return {"status": "not_initialized"}
     result = service.run_now()
     return result
 
@@ -139,7 +146,9 @@ def trigger_auto_sync() -> dict[str, Any]:
 @app.get("/sync/status")
 def sync_status() -> dict[str, Any]:
     """查询当前同步状态"""
-    service: AutoSyncService = app.state.auto_sync
+    service: AutoSyncService | None = getattr(app.state, "auto_sync", None)
+    if service is None:
+        return {"status": "not_initialized"}
     return service.get_sync_status()
 
 
@@ -156,3 +165,4 @@ app.include_router(webhooks.router)
 app.include_router(articles.router)
 app.include_router(dashboard_router)
 app.include_router(accounts.router)
+app.include_router(settings.router)

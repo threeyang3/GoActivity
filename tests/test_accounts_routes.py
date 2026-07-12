@@ -169,7 +169,7 @@ def test_update_account_articles_proxies(monkeypatch) -> None:
 
     try:
         with TestClient(app) as client:
-            resp = client.get("/accounts/update/MP_WXS_xyz")
+            resp = client.post("/accounts/update/MP_WXS_xyz")
     finally:
         _restore_creds(settings, orig_ak, orig_sk)
 

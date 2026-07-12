@@ -74,3 +74,37 @@ def parse_to_epoch(value: str) -> int | None:
     if dt is None:
         return None
     return int(dt.timestamp())
+
+
+def to_storage_datetime(value: str | datetime | None, tz_name: str = "Asia/Shanghai") -> datetime | None:
+    """转为 SQLite 友好的 naive UTC 时间。"""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        dt = parse_datetime_str(value)
+    else:
+        dt = value
+    if dt is None:
+        return None
+    tz = ZoneInfo(tz_name)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz)
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def from_storage_datetime(value: datetime | None, tz_name: str = "Asia/Shanghai") -> datetime | None:
+    """将 SQLite 中的 naive UTC 时间还原为目标时区时间。"""
+    if value is None:
+        return None
+    tz = ZoneInfo(tz_name)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(tz)
+
+
+def format_display_datetime(value: datetime | None, tz_name: str = "Asia/Shanghai") -> str:
+    """用于 API / UI 展示的统一时间格式。"""
+    local_dt = from_storage_datetime(value, tz_name)
+    if local_dt is None:
+        return ""
+    return local_dt.strftime("%Y-%m-%d %H:%M:%S")

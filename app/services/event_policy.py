@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Article, Event
 from app.utils.constants import EventStatus, RetentionDecision, EventTimeStatus
-from app.utils.time import parse_datetime_str, SHANGHAI_TZ
+from app.utils.time import SHANGHAI_TZ, from_storage_datetime, parse_datetime_str, to_storage_datetime
 RECAP_KEYWORDS = (
     "回顾",
     "总结",
@@ -164,7 +164,13 @@ def parse_datetime(value: str) -> datetime | None:
     return parse_datetime_str(value)
 
 
-def event_time_status(start_time: str, end_time: str) -> str:
+def event_time_status(
+    start_time: str,
+    end_time: str,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    tz_name: str = "Asia/Shanghai",
+) -> str:
     """根据开始/结束时间判断事件的时间状态。
 
     返回值：
@@ -177,8 +183,8 @@ def event_time_status(start_time: str, end_time: str) -> str:
     """
     from datetime import timedelta
 
-    end_at = parse_datetime(end_time)
-    start_at = parse_datetime(start_time)
+    end_at = from_storage_datetime(end_at, tz_name) if end_at else parse_datetime(end_time)
+    start_at = from_storage_datetime(start_at, tz_name) if start_at else parse_datetime(start_time)
     now = now_shanghai()
 
     # 无任何时间信息
@@ -228,7 +234,13 @@ class EventPolicyService:
         if article is None:
             return EventPolicyDecision("unknown", "article not found", EventTimeStatus.UNKNOWN, RetentionDecision.KEEP, False)
         article_type, reason = classify_article_type(article.title or event.title, article.processed_markdown or article.raw_markdown)
-        time_status = event_time_status(event.start_time, event.end_time)
+        time_status = event_time_status(
+            event.start_time,
+            event.end_time,
+            start_at=event.start_at,
+            end_at=event.end_at,
+            tz_name=event.timezone or "Asia/Shanghai",
+        )
         gate = evaluate_article_gate(article.title or event.title, article.processed_markdown or article.raw_markdown, article.publish_time)
         is_recent = _is_article_recent(article.publish_time, days=7)
 
@@ -257,6 +269,8 @@ class EventPolicyService:
         event.article_type_reason = decision.article_type_reason
         event.event_time_status = decision.event_time_status
         event.retention_decision = decision.retention_decision
+        event.start_at = to_storage_datetime(event.start_time, event.timezone or "Asia/Shanghai")
+        event.end_at = to_storage_datetime(event.end_time, event.timezone or "Asia/Shanghai")
         if decision.should_remove_from_feishu and not event.user_keep:
             if event.feishu_record_id:
                 event.status = EventStatus.EXPIRED_HIDDEN

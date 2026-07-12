@@ -18,7 +18,7 @@ from app.services.vision import VisionExtractor
 from app.utils.constants import EventStatus
 from app.utils.ids import stable_id
 from app.utils.jsonx import dumps_json, dumps_list, loads_list
-from app.utils.time import utcnow
+from app.utils.time import to_storage_datetime, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +133,9 @@ class EventExtractor:
         event.category_2 = result.get("category_2") or ""
         event.start_time = result.get("start_time") or ""
         event.end_time = result.get("end_time") or ""
+        event.start_at = to_storage_datetime(event.start_time, event.timezone or "Asia/Shanghai")
+        event.end_at = to_storage_datetime(event.end_time, event.timezone or "Asia/Shanghai")
+        event.raw_time_text = "\n".join(filter(None, [result.get("start_time"), result.get("end_time")]))
         event.location = result.get("location") or ""
         event.speaker = result.get("speaker") or ""
         event.organizer = result.get("organizer") or ""
@@ -181,8 +184,10 @@ class EventExtractor:
             return
         if not event.start_time:
             event.start_time = candidate.start_time
+            event.start_at = to_storage_datetime(event.start_time, event.timezone or "Asia/Shanghai")
         if not event.end_time and candidate.end_time:
             event.end_time = candidate.end_time
+            event.end_at = to_storage_datetime(event.end_time, event.timezone or "Asia/Shanghai")
 
     def _apply_location_extraction(self, article: Article, event: Event, ocr_text: str) -> None:
         """从文章内容中提取地点信息。"""

@@ -18,6 +18,10 @@ class EventOut(BaseModel):
     category_2: str
     start_time: str
     end_time: str
+    start_at: str = ""
+    end_at: str = ""
+    timezone: str = "Asia/Shanghai"
+    raw_time_text: str = ""
     location: str
     speaker: str
     organizer: str
@@ -63,6 +67,7 @@ class EventOut(BaseModel):
     registration_deadline: str = ""
     participant_limit: str = ""
     dedup_key: str = ""
+    feishu_sync_warning: str = ""
 
 
 class ExtractResponse(BaseModel):

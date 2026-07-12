@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.auth import require_admin
 from app.db import get_db
 from app.services.feishu_messenger import FeishuMessenger
 from app.services.report_service import ReportService
@@ -16,6 +17,7 @@ router = APIRouter(tags=["reports"])
 def daily_report(
     send_to_feishu: bool = False,
     db: Session = Depends(get_db),
+    _auth: None = Depends(require_admin),
 ) -> dict[str, Any]:
     content = ReportService(db).daily_report()
     result: dict[str, Any] = {"content": content}
@@ -32,6 +34,7 @@ def daily_report(
 def weekly_report(
     send_to_feishu: bool = False,
     db: Session = Depends(get_db),
+    _auth: None = Depends(require_admin),
 ) -> dict[str, Any]:
     content = ReportService(db).weekly_report()
     result: dict[str, Any] = {"content": content}

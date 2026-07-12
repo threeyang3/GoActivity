@@ -4,6 +4,7 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.auth import require_admin
 from app.db import get_db
 from app.exceptions import SyncError
 from app.routes.helpers import sync_run_to_out
@@ -25,7 +26,7 @@ router = APIRouter(tags=["sync"])
 
 
 @router.post("/sync/we-mp-rss/articles", response_model=SyncResponse)
-def sync_we_mp_rss_articles(limit: int = 20, offset: int = 0, include_no_content: bool = False, db: Session = Depends(get_db)) -> SyncResponse:
+def sync_we_mp_rss_articles(limit: int = 20, offset: int = 0, include_no_content: bool = False, db: Session = Depends(get_db), _auth: None = Depends(require_admin)) -> SyncResponse:
     run = SyncRunService(db).start_run("we-mp-rss-json", {"limit": limit, "offset": offset, "include_no_content": include_no_content})
     try:
         results = ArticleService(db).sync_from_we_mp_rss_articles(limit=limit, offset=offset, include_no_content=include_no_content)
@@ -40,7 +41,7 @@ def sync_we_mp_rss_articles(limit: int = 20, offset: int = 0, include_no_content
 
 
 @router.post("/sync/we-mp-rss/rss/{feed_id}", response_model=SyncResponse)
-def sync_we_mp_rss_rss(feed_id: str, limit: int = 20, offset: int = 0, db: Session = Depends(get_db)) -> SyncResponse:
+def sync_we_mp_rss_rss(feed_id: str, limit: int = 20, offset: int = 0, db: Session = Depends(get_db), _auth: None = Depends(require_admin)) -> SyncResponse:
     run = SyncRunService(db).start_run(f"we-mp-rss-rss:{feed_id}", {"limit": limit, "offset": offset, "feed_id": feed_id})
     try:
         results = ArticleService(db).sync_from_we_mp_rss_rss(feed_id=feed_id, limit=limit, offset=offset)

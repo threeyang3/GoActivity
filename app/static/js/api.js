@@ -82,6 +82,10 @@ const API = {
   autoSyncStatus() { return this.get('/sync/status'); },
   triggerAutoSync() { return this.post('/sync/auto'); },
   botStatus() { return this.get('/bot/status'); },
+  automationAccountsHealth() { return this.get('/automation/accounts-health'); },
+  feishuReconcile() { return this.get('/automation/feishu-reconcile'); },
+  repairFeishuReconcile() { return this.post('/automation/feishu-reconcile'); },
+  collectPriorityAccounts() { return this.post('/automation/collect-priority'); },
 
   // Settings
   settingsSchema() { return this.get('/settings/schema'); },

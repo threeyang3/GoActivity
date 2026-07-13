@@ -16,7 +16,7 @@ from app.config import get_settings, validate_settings
 from app.db import init_db
 from app.exceptions import AppError, FeishuError, ProviderError, SyncError, ValidationError
 from app.logging_config import setup_logging
-from app.routes import accounts, articles, events, health, reports, settings, setup, sync, webhooks
+from app.routes import accounts, articles, automation, events, health, reports, settings, setup, sync, webhooks
 from app.routes.dashboard import router as dashboard_router
 from app.services.auto_sync import AutoSyncService
 from app.services.bot_consumer import BotEventConsumer
@@ -166,3 +166,4 @@ app.include_router(articles.router)
 app.include_router(dashboard_router)
 app.include_router(accounts.router)
 app.include_router(settings.router)
+app.include_router(automation.router)

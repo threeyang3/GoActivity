@@ -37,6 +37,8 @@ class AutoSyncService:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.scheduler = BackgroundScheduler()
+        self._execution_lock = threading.Lock()
+        self._status_lock = threading.Lock()
         self._sync_status = {
             "running": False,
             "phase": "idle",       # idle | fetching | extracting | syncing | done | error
@@ -84,6 +86,34 @@ class AutoSyncService:
                 logger.warning("Invalid auto_sync_cron '%s': %s", sync_cron, e)
         else:
             logger.info("Auto sync disabled (AUTO_SYNC_CRON not set)")
+
+        if self.settings.priority_collection_cron:
+            try:
+                self.scheduler.add_job(
+                    self._run_priority_collection,
+                    parse_cron(self.settings.priority_collection_cron),
+                    id="priority_collection",
+                    name="重点公众号主动采集",
+                    replace_existing=True,
+                    coalesce=True,
+                    max_instances=1,
+                )
+            except ValueError as exc:
+                logger.warning("Invalid priority collection cron: %s", exc)
+
+        if self.settings.feishu_reconcile_enabled and self.settings.feishu_reconcile_cron:
+            try:
+                self.scheduler.add_job(
+                    self._run_feishu_reconcile,
+                    parse_cron(self.settings.feishu_reconcile_cron),
+                    id="feishu_reconcile",
+                    name="飞书每日对账",
+                    replace_existing=True,
+                    coalesce=True,
+                    max_instances=1,
+                )
+            except ValueError as exc:
+                logger.warning("Invalid Feishu reconcile cron: %s", exc)
 
         if not self.scheduler.running:
             self.scheduler.start()
@@ -289,6 +319,8 @@ class AutoSyncService:
                 articles = article_service.ingest_candidates_parallel(
                     candidates, on_progress=_on_ingest_progress
                 )
+                articles_created = sum(1 for item in articles if item.get("article_created"))
+                articles_skipped = len(articles) - articles_created
                 ingest_duration = (datetime.now() - ingest_start).total_seconds()
                 logger.info(
                     "步骤2/6 完成 | 成功入库 %d 篇文章 | 耗时: %.1f秒",
@@ -311,6 +343,9 @@ class AutoSyncService:
                 self._sync_status["message"] = "正在补提取事件时间…"
                 backfilled = self._backfill_missing_times(db)
                 logger.info("步骤3.5 | 补提取 %d 个事件时间", backfilled)
+
+                self._sync_status["message"] = "正在重试飞书同步失败的事件…"
+                failed_sync_retried = self._retry_failed_syncs(db)
 
                 # 4. 刷新已同步事件的时间状态（过期 → past 等）
                 self._sync_status["message"] = "正在刷新事件时间状态…"
@@ -343,13 +378,18 @@ class AutoSyncService:
                 )
 
                 result = {
-                    "articles_fetched": len(articles),
+                    **article_service.last_fetch_metrics,
+                    "articles_processed": len(articles),
+                    "articles_created": articles_created,
+                    "articles_skipped": articles_skipped,
+                    "articles_fetched": articles_created,
                     "images_retried": retried,
                     "extracts_retried": extract_retried,
                     "times_backfilled": backfilled,
                     "statuses_refreshed": refreshed,
                     "events_synced": synced,
                     "events_failed": failed,
+                    "failed_sync_retried": failed_sync_retried,
                 }
 
                 # 6. 自动归档过期事件
@@ -363,12 +403,15 @@ class AutoSyncService:
                     logger.info("步骤6/6 | 自动归档 %d 个过期事件", result["auto_archived"])
 
                 if failed == 0:
-                    run_service.finish_success(run, imported_count=len(articles), results=[result])
+                    run_service.finish_success(run, imported_count=articles_created, results=[result])
                 else:
                     run_service.finish_failure(run, f"{failed} events failed to sync")
 
                 # 7. 新活动通知
                 self.notify_new_events(result)
+
+                from app.services.automation_guard import AutomationGuardService
+                result["alert"] = AutomationGuardService(db).send_alerts(sync_result=result)
 
                 # 输出同步总结
                 total_duration = (datetime.now() - sync_start_time).total_seconds()
@@ -396,10 +439,24 @@ class AutoSyncService:
 
     def _run_sync(self) -> None:
         """定时任务回调：执行同步并记录日志。"""
+        if not self._begin_run("scheduled"):
+            logger.info("Scheduled sync skipped because another maintenance run is active")
+            return
         try:
-            result = self._execute_sync()
+            self._execute_sync()
         except Exception as e:
             logger.error("定时同步失败: %s", e)
+            self._finish_run("error", f"同步失败: {e}")
+            try:
+                from app.services.automation_guard import AutomationGuardService
+                with contextlib.closing(SessionLocal()) as db:
+                    AutomationGuardService(db).send_alerts(sync_result={"run_error": str(e)})
+            except Exception as alert_exc:
+                logger.error("Failed to send sync failure alert: %s", alert_exc)
+        else:
+            self._finish_run("done", "同步完成")
+        finally:
+            self._execution_lock.release()
 
     def _run_archive_only(self) -> None:
         """独立运行自动归档（不依赖同步流程）。
@@ -408,6 +465,10 @@ class AutoSyncService:
         """
         auto_archive_days = self.settings.auto_archive_expired_days
         if auto_archive_days <= 0:
+            return
+
+        if not self._execution_lock.acquire(blocking=False):
+            logger.info("Standalone auto-archive skipped because a sync is active")
             return
 
         logger.info("Running standalone auto-archive (cutoff=%d days)...", auto_archive_days)
@@ -425,6 +486,49 @@ class AutoSyncService:
                     logger.info("Standalone auto-archive: no events to archive")
         except Exception as e:
             logger.error("Standalone auto-archive failed: %s", e)
+        finally:
+            self._execution_lock.release()
+
+    def _run_priority_collection(self) -> None:
+        if not self._execution_lock.acquire(blocking=False):
+            logger.info("Priority collection skipped because maintenance is active")
+            return
+        try:
+            from app.services.automation_guard import AutomationGuardService
+            with contextlib.closing(SessionLocal()) as db:
+                result = AutomationGuardService(db).trigger_priority_collection()
+                logger.info("Priority collection result: %s", result)
+                AutomationGuardService(db).send_alerts(collection_result=result)
+                if result.get("triggered"):
+                    self.scheduler.add_job(
+                        self._run_sync,
+                        "date",
+                        run_date=datetime.now() + timedelta(minutes=2),
+                        id="priority_collection_followup",
+                        name="重点公众号采集后补偿同步",
+                        replace_existing=True,
+                        misfire_grace_time=300,
+                    )
+        except Exception as exc:
+            logger.error("Priority collection failed: %s", exc)
+        finally:
+            self._execution_lock.release()
+
+    def _run_feishu_reconcile(self) -> None:
+        if not self._execution_lock.acquire(blocking=False):
+            logger.info("Feishu reconcile skipped because maintenance is active")
+            return
+        try:
+            from app.services.automation_guard import AutomationGuardService
+            with contextlib.closing(SessionLocal()) as db:
+                guard = AutomationGuardService(db)
+                result = guard.reconcile_feishu(repair_missing=True)
+                guard.send_alerts(reconcile=result)
+                logger.info("Feishu reconcile result: %s", result)
+        except Exception as exc:
+            logger.error("Feishu reconcile failed: %s", exc)
+        finally:
+            self._execution_lock.release()
 
     def _retry_image_downloads(self, db: "Session") -> int:
         """重试 needs_image_retry 状态的事件：重新下载图片并抽取。"""
@@ -486,6 +590,28 @@ class AutoSyncService:
         if retried:
             logger.info("Extract retry: %d events recovered", retried)
         return retried
+
+    def _retry_failed_syncs(self, db: "Session") -> int:
+        """Retry due Feishu failures with persistent exponential backoff."""
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        events = (
+            db.query(Event)
+            .filter(
+                Event.status == EventStatus.FAILED_SYNC,
+                Event.feishu_retry_count < self.settings.feishu_sync_retry_max,
+                (Event.feishu_next_retry_at.is_(None)) | (Event.feishu_next_retry_at <= now),
+            )
+            .order_by(Event.feishu_next_retry_at.asc())
+            .limit(50)
+            .all()
+        )
+        if not events:
+            return 0
+        return self._sync_event_ids_parallel(
+            [event.event_id for event in events],
+            label="重试飞书同步",
+            max_workers=2,
+        )
 
     def _refresh_event_statuses(self, db: "Session") -> int:
         """刷新已同步到飞书的事件的时间状态。
@@ -676,26 +802,14 @@ class AutoSyncService:
 
     def run_now(self) -> dict:
         """立即执行一次同步（供手动触发使用）。非阻塞，后台线程运行。"""
-        if self._sync_status["running"]:
+        if not self._begin_run("manual"):
             return {"status": "already_running", "message": "同步正在进行中"}
 
         def _run():
-            self._sync_status.update({
-                "running": True,
-                "phase": "fetching",
-                "message": "正在拉取文章…",
-                "result": None,
-                "started_at": datetime.now(timezone.utc).isoformat(),
-            })
             try:
                 logger.info("Running manual sync...")
                 result = self._execute_sync()
-                self._sync_status.update({
-                    "running": False,
-                    "phase": "done",
-                    "message": "同步完成",
-                    "result": result,
-                })
+                self._finish_run("done", "同步完成", result)
                 logger.info(
                     "Manual sync complete: %d articles fetched, %d events synced, %d failed",
                     result["articles_fetched"],
@@ -704,19 +818,46 @@ class AutoSyncService:
                 )
             except Exception as e:
                 logger.exception("Manual sync failed")
-                self._sync_status.update({
-                    "running": False,
-                    "phase": "error",
-                    "message": f"同步失败: {e}",
-                    "result": None,
-                })
+                self._finish_run("error", f"同步失败: {e}")
+            finally:
+                self._execution_lock.release()
 
-        threading.Thread(target=_run, daemon=True).start()
+        try:
+            threading.Thread(target=_run, daemon=True).start()
+        except Exception:
+            self._finish_run("error", "同步后台线程启动失败")
+            self._execution_lock.release()
+            raise
         return {"status": "started", "message": "同步已启动"}
 
     def get_sync_status(self) -> dict:
         """返回当前同步状态。"""
-        return dict(self._sync_status)
+        with self._status_lock:
+            return dict(self._sync_status)
+
+    def _begin_run(self, trigger: str) -> bool:
+        """Atomically reserve the single maintenance execution slot."""
+        if not self._execution_lock.acquire(blocking=False):
+            return False
+        with self._status_lock:
+            self._sync_status.update({
+                "running": True,
+                "phase": "fetching",
+                "message": "正在拉取文章…",
+                "result": None,
+                "trigger": trigger,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            })
+        return True
+
+    def _finish_run(self, phase: str, message: str, result: dict | None = None) -> None:
+        with self._status_lock:
+            self._sync_status.update({
+                "running": False,
+                "phase": phase,
+                "message": message,
+                "result": result,
+            })
 
     def notify_new_events(self, result: dict) -> None:
         """同步完成后发送飞书通知（仅当有新活动入库时）。"""

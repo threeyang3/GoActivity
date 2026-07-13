@@ -34,20 +34,20 @@ The current Windows machine has already been configured and verified.
 - Feishu target table: `活动库`
 - Feishu attachment field for posters: `海报附件`
 
-As of the latest verified run (2026-06-25):
+As of the latest verified run (2026-07-13):
 
 - all local `Event` rows are synced to Feishu
 - poster images are uploaded as real Feishu attachments
 - `event.feishu_record_id` is persisted locally and reused on update
-- Alembic migration system is active (6 migrations in repository, including runtime settings and canonical time fields)
-- 189 tests passing
+- Alembic migration system is active (7 migrations in repository, including persistent Feishu retry state)
+- 205 tests passing
 - Event deduplication via `dedup_key` field
 
 ## Project Structure
 - `app/`
   FastAPI application code.
 - `app/routes/`
-  APIRouter modules: `health.py`, `events.py`, `sync.py`, `reports.py`, `setup.py`, `webhooks.py`, `articles.py`, `dashboard.py`, `accounts.py`.
+  APIRouter modules: `health.py`, `events.py`, `sync.py`, `reports.py`, `setup.py`, `webhooks.py`, `articles.py`, `dashboard.py`, `accounts.py`, `automation.py`.
 - `app/services/`
   Business logic for ingestion, image processing, extraction, Feishu sync, reports, diagnostics, auto-sync, scheduling, Feishu messaging, view setup, bot handler, bot consumer, extraction validator, archive service.
 - `app/services/feishu_fields.py`
@@ -83,7 +83,7 @@ As of the latest verified run (2026-06-25):
 - `scripts/`
   Management scripts for we-mp-rss (start/stop/status/install-task) and GoActivity setup.
 - `tests/`
-  Pytest suite (162 tests). `conftest.py` uses set-difference cleanup: records existing IDs before each test, deletes only new ones after.
+  Pytest suite (205 tests). `conftest.py` uses set-difference cleanup: records existing IDs before each test, deletes only new ones after.
 - `.github/workflows/ci.yml`
   CI pipeline: pytest on push/PR to main.
 - `we-mp-rss/`
@@ -96,6 +96,7 @@ Important values already used by the running project include:
 
 - `WE_MP_RSS_ACCESS_KEY`
 - `WE_MP_RSS_SECRET_KEY`
+- `WE_MP_RSS_WEBHOOK_TOKEN` — 远程 WeRSS Webhook 的请求令牌；通过 `X-GoActivity-Webhook-Token` 传递
 - `FEISHU_PROVIDER=lark_cli`
 - `FEISHU_CLI_PATH`
 - `FEISHU_CLI_AS=user`
@@ -116,6 +117,11 @@ Important values already used by the running project include:
 - `VISION_API_TIMEOUT_SECONDS` — Vision API 超时（默认 60）
 - `AUTO_SYNC_CRON` — 自动同步 cron 表达式（默认 `0 * * * *`，每小时）
 - `AUTO_ARCHIVE_EXPIRED_DAYS` — 过期活动自动归档天数（默认 30，0 禁用）
+- `FEISHU_SYNC_RETRY_MAX` / `FEISHU_SYNC_RETRY_BASE_MINUTES` — 飞书失败同步的最大重试次数与指数退避基数
+- `PRIORITY_ACCOUNTS` / `PRIORITY_COLLECTION_CRON` — 高频采集公众号（逗号分隔名称）与采集周期；名称为空时覆盖全部订阅
+- `ACCOUNT_STALE_HOURS` — 公众号数据新鲜度 SLA 阈值（默认 36 小时）
+- `FEISHU_RECONCILE_ENABLED` / `FEISHU_RECONCILE_CRON` — 每日飞书对账开关与周期（默认 03:30）
+- `AUTOMATION_ALERTS_ENABLED` / `AUTOMATION_ALERT_COOLDOWN_HOURS` — 自动化告警开关与同类告警冷却时间
 - `FEISHU_BOT_ENABLED` — 启用/禁用飞书机器人（默认 false）
 - `FEISHU_BOT_APP_ID` — 飞书应用 App ID（bot 需要）
 - `FEISHU_BOT_RATE_LIMIT` — 机器人每用户每分钟消息上限（默认 10）
@@ -207,13 +213,20 @@ Each hourly sync run executes these steps in order:
 2. **Dry spell detection**: if no candidates AND no new articles in last 24h, trigger we-mp-rss collection and re-fetch (最多等10分钟)
 3. **Parallel ingest** (`ingest_candidates_parallel`): download images (5 workers) → OCR (5 workers, skipped if no images) → Vision API (skipped if no images + short content) → DB commit (4 workers, SQLite lock retry)
 4. Retry failed image downloads (`needs_image_retry` events)
-5. **Parallel status refresh** (`_refresh_event_statuses`): re-evaluate `event_time_status` for all synced events; changed ones synced to Feishu in parallel (2 workers)
-6. **Parallel Feishu sync** (`_sync_event_ids_parallel`): new events synced to Feishu Bitable in parallel (3 workers, per-thread SessionLocal + FeishuAdapter)
-7. **Auto-archive expired** (`auto_archive_expired`): events expired > N days archived automatically (skips `user_keep`/`user_participate`), configurable via `AUTO_ARCHIVE_EXPIRED_DAYS`
+5. Retry due `failed_sync` rows with persistent exponential backoff; exhausted rows remain visible for manual handling
+6. **Parallel status refresh** (`_refresh_event_statuses`): re-evaluate `event_time_status` for all synced events; changed ones synced to Feishu in parallel (2 workers)
+7. **Parallel Feishu sync** (`_sync_event_ids_parallel`): new events synced to Feishu Bitable in parallel (3 workers, per-thread SessionLocal + FeishuAdapter)
+8. **Auto-archive expired** (`auto_archive_expired`): events expired > N days archived automatically (skips `user_keep`/`user_participate`), configurable via `AUTO_ARCHIVE_EXPIRED_DAYS`
+
+Run metrics distinguish remote rows scanned, new candidates, articles processed/created/skipped, and Feishu successes/failures. Do not use scanned rows as the new-article count.
+
+Independent maintenance jobs use the same execution lock: priority accounts are triggered every 30 minutes by default and followed by a full sync after 2 minutes; Feishu reconciliation runs daily and only auto-recreates clearly missing remote records. Field drift and missing attachments are reported, not overwritten automatically.
 
 Steps 4 and 5 use `ThreadPoolExecutor` with per-thread DB sessions, following the same thread-safety pattern as step 2. SQLite "database is locked" retries are handled automatically.
 
 Phase tracking: `GET /sync/status` returns `{running, phase, message}` where phase = `fetching | extracting | syncing | done | error`.
+
+Manual sync, scheduled sync, and startup archive share one non-blocking execution lock. A second trigger is skipped or returns `already_running`; do not bypass this lock when adding maintenance entry points.
 
 ## Alembic Migrations
 The project uses Alembic for database schema migrations.
@@ -230,6 +243,8 @@ Current migration chain:
 3. `3b6e4c04bbee` — add `sync_logs.run_id`
 4. `a1b2c3d4e5f6` — add indexes on `events.status`, `events.start_time`, `events.feishu_record_id`
 5. `c2d3e4f5a6b7` — add `events.user_participate`, `events.archived_at`
+6. `d4e5f6a7b8c9` — add `app_settings` plus canonical event time fields
+7. `e5f6a7b8c9d0` — add persistent Feishu retry count, next retry time, and last error
 
 ## Coding Rules for This Repo
 - Use `apply_patch` for manual file edits.
@@ -273,6 +288,10 @@ POST /events/{event_id}/participate  # 标记/取消参与
 POST /events/{event_id}/archive      # 手动归档
 POST /events/{event_id}/unarchive    # 取消归档
 GET  /dashboard/pipeline-status      # 数据管道状态
+GET  /automation/accounts-health     # 公众号新鲜度与 SLA
+GET  /automation/feishu-reconcile    # 只读飞书对账
+POST /automation/feishu-reconcile    # 仅补建飞书缺失记录
+POST /automation/collect-priority    # 触发优先公众号采集
 ```
 
 If touching Feishu sync, verify both:
@@ -308,10 +327,10 @@ When continuing work, assume the following are already true unless a later failu
 - all current events have already been synced to Feishu once
 - Vision API (智谱 AI GLM-4.6V) is configured and working
 - automatic sync service is running (hourly cron)
-- 11 Feishu views are created with proper filters (excluding past/expired/recap/archived)
+- 11 Feishu main views are created and verified in the live Base; the service now recreates dirty views if visible-field updates do not stick
 - daily/weekly reports are sent to user's Feishu via `FEISHU_REPORT_USER_ID`
-- Alembic migrations are up to date (4 migrations applied)
-- 162 tests passing, CI pipeline configured
+- Alembic migrations are up to date (7 migrations in repository)
+- 205 tests passing, CI pipeline configured
 - Web management UI available at `http://localhost:8000/` (editorial campus bulletin design)
 - Tray application manages both services, with dual-status icon and independent autostart
 - SQLite WAL mode enabled for better concurrent read/write performance

@@ -616,6 +616,24 @@ def get_pipeline_status(db: Session = Depends(get_db)) -> dict[str, Any]:
         .scalar()
         or 0
     )
+    failed_sync_retry_count = (
+        db.query(func.count(Event.id))
+        .filter(
+            Event.status == EventStatus.FAILED_SYNC,
+            Event.feishu_retry_count < settings.feishu_sync_retry_max,
+        )
+        .scalar()
+        or 0
+    )
+    failed_sync_exhausted_count = (
+        db.query(func.count(Event.id))
+        .filter(
+            Event.status == EventStatus.FAILED_SYNC,
+            Event.feishu_retry_count >= settings.feishu_sync_retry_max,
+        )
+        .scalar()
+        or 0
+    )
 
     # 7. 文章总数
     total_articles = db.query(func.count(Article.id)).scalar() or 0
@@ -646,6 +664,8 @@ def get_pipeline_status(db: Session = Depends(get_db)) -> dict[str, Any]:
         "last_sync": last_sync,
         "auto_sync_cron": auto_sync_cron,
         "pending_sync_count": pending_sync_count,
+        "failed_sync_retry_count": failed_sync_retry_count,
+        "failed_sync_exhausted_count": failed_sync_exhausted_count,
         "feishu_configured": feishu_configured,
         "archived_count": archived_count,
         "auto_archive_expired_days": auto_archive_days,
@@ -789,47 +809,6 @@ def get_history(
 @router.get("/dashboard/accounts-health")
 def get_accounts_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     """获取各公众号的健康状态。"""
-    from app.models import Article
+    from app.services.automation_guard import AutomationGuardService
 
-    # 获取所有公众号及其文章统计
-    accounts = (
-        db.query(
-            Article.mp_name,
-            func.count(Article.id).label("article_count"),
-            func.max(Article.publish_time).label("latest_publish"),
-            func.max(Article.created_at).label("latest_ingested"),
-        )
-        .filter(Article.mp_name != "")
-        .group_by(Article.mp_name)
-        .order_by(func.max(Article.created_at).desc())
-        .all()
-    )
-
-    result = []
-    for acc in accounts:
-        # 统计该公众号的事件数
-        event_count = (
-            db.query(func.count(Event.id))
-            .join(Article, Event.article_id == Article.article_id)
-            .filter(Article.mp_name == acc.mp_name)
-            .scalar()
-            or 0
-        )
-
-        # 计算文章新鲜度
-        from datetime import datetime, timezone
-        stale_days = None
-        if acc.latest_ingested:
-            age = datetime.now(timezone.utc) - acc.latest_ingested.replace(tzinfo=timezone.utc)
-            stale_days = age.days
-
-        result.append({
-            "mp_name": acc.mp_name,
-            "article_count": acc.article_count,
-            "event_count": event_count,
-            "latest_publish_time": acc.latest_publish,
-            "latest_ingested_at": acc.latest_ingested.isoformat() if acc.latest_ingested else None,
-            "stale_days": stale_days,
-        })
-
-    return result
+    return AutomationGuardService(db).account_health()

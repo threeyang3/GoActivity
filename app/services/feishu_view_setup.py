@@ -471,10 +471,26 @@ class FeishuViewSetupService:
 
     def _recreate_view(self, config: ViewConfig, old_view_id: str) -> ViewSetupResult:
         """删除旧视图后按目标配置重建�?"""
-        self.delete_view(old_view_id)
         view_id = self.create_view(config)
-        self._apply_view_config(view_id, config)
-        self._verify_view_config(view_id, config)
+        try:
+            self._apply_view_config(view_id, config)
+            self._verify_view_config(view_id, config)
+        except Exception:
+            try:
+                self.delete_view(view_id)
+            except Exception as cleanup_exc:
+                logger.warning("Failed to clean up replacement view %s: %s", view_id, cleanup_exc)
+            raise
+
+        try:
+            self.delete_view(old_view_id)
+        except Exception:
+            logger.error(
+                "Replacement view %r is ready, but old view %s could not be removed",
+                config.name,
+                old_view_id,
+            )
+            raise
         return ViewSetupResult(name=config.name, action="updated", view_id=view_id)
 
     def _apply_view_config(self, view_id: str, config: ViewConfig) -> None:

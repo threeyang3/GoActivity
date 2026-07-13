@@ -32,6 +32,7 @@ class ArticleService:
     def __init__(self, db: Session) -> None:
         self.db = db
         self.settings = get_settings()
+        self.last_fetch_metrics = {"remote_scanned": 0, "existing_skipped": 0, "new_candidates": 0}
 
     def ingest_we_mp_rss_payload(self, payload: dict) -> dict:
         data = normalize_payload(payload)
@@ -78,6 +79,8 @@ class ArticleService:
 
         seen_ids: set[str] = set()
         candidates: list[dict] = []
+        remote_scanned = 0
+        existing_skipped = 0
         page_offset = offset
         while len(candidates) < limit:
             page = self._fetch_articles_with_retry(
@@ -89,6 +92,7 @@ class ArticleService:
             if not page:
                 break
             page_offset += len(page)
+            remote_scanned += len(page)
             for payload in page:
                 normalized = normalize_payload(payload)
                 article_id = normalized.get("article_id", "")
@@ -96,6 +100,7 @@ class ArticleService:
                     continue
                 if self.db.query(Article.article_id).filter(Article.article_id == article_id).first():
                     seen_ids.add(article_id)
+                    existing_skipped += 1
                     continue
                 seen_ids.add(article_id)
                 candidates.append(payload)
@@ -104,6 +109,11 @@ class ArticleService:
             if len(page) < page_size:
                 break
 
+        self.last_fetch_metrics = {
+            "remote_scanned": remote_scanned,
+            "existing_skipped": existing_skipped,
+            "new_candidates": len(candidates),
+        }
         if not candidates:
             return []
 
@@ -320,6 +330,7 @@ class ArticleService:
                 "event_id": "",
                 "image_count": 0,
                 "status": gate.retention_decision,
+                "article_created": False,
             }
         article = self._upsert_article(data, raw_payload)
         image_count = self._process_images(article)
@@ -345,6 +356,7 @@ class ArticleService:
             "event_id": event.event_id,
             "image_count": image_count,
             "status": event.status,
+            "article_created": True,
         }
 
     def _dedup_event(self, event: Event) -> Event:

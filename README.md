@@ -11,6 +11,7 @@ conda create -n we-mp-rss python=3.13
 conda create -n goactivity python=3.11
 conda activate goactivity
 pip install -r requirements.txt
+pip install -r requirements-ocr.txt
 ```
 
 初始化数据库（首次运行自动执行 Alembic 迁移）：
@@ -36,6 +37,7 @@ Miniconda 路径（当前机器）：`D:\miniconda3`
 | ③ AI 抽取 | GoActivity | Vision API 提取活动信息 | 随拉取触发 |
 | ④ 同步飞书 | GoActivity → 飞书 | lark-cli 写入多维表格 | 随抽取触发 |
 | ⑤ 日报/周报 | GoActivity → 飞书 | `ReportScheduler` 发送 | 每天 9:00 / 每周一 9:00 |
+| ⑥ 自动巡检 | GoActivity ↔ 飞书 | 公众号 SLA、失败重试、Base 对账与告警 | 30 分钟 / 每日 3:30 |
 
 ### 一键启动（手动）
 
@@ -86,6 +88,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-autostart.ps1
 1. 访问 `http://localhost:8001` → 消息任务 → 新建
 2. webhook 地址：`http://localhost:8000/webhooks/we-mp-rss`
 3. 格式选 JSON
+
+同机访问 `127.0.0.1` 无需额外认证。如果 we-mp-rss 部署在其他机器，需在 GoActivity 配置 `WE_MP_RSS_WEBHOOK_TOKEN`，并让发送方携带 `X-GoActivity-Webhook-Token` 请求头；未配置令牌时远程 Webhook 会被拒绝。
 
 ### 飞书机器人（AI 对话查询）
 
@@ -148,7 +152,13 @@ http://localhost:8001
 - 提供配置自检、同步日志、同步任务状态接口，便于排障。
 - 提供结构化日报/周报（按时间筛选、分类统计、活动列表），支持发送到飞书群/用户。
 - 自动同步服务：定时从 we-mp-rss 拉取新文章、Vision 抽取、同步到飞书（每小时）。
-- 飞书视图自动创建/更新（11 个视图，支持过滤、排序、分组）。
+- 自动同步统计区分“远端扫描、候选文章、实际新建、跳过、飞书成功/失败”，避免把重复文章计为新增。
+- 飞书失败同步持久化记录错误与下次重试时间，按指数退避自动重试，并在超过上限后进入人工待办。
+- 公众号健康度按最近发文与入库时间计算 SLA；优先公众号默认每 30 分钟触发采集，并在 2 分钟后接续完整同步。
+- 每日飞书对账分页核对本地记录与 Base；自动修复仅补建明确缺失记录，字段漂移和附件缺失只告警、不覆盖。
+- 自动化告警覆盖连续同步失败、失败重试耗尽、待办积压、低置信度、公众号过期与飞书对账差异，并对同类告警做冷却去重。
+- 手动同步、定时同步和启动归档共享单一执行锁，避免完整链路重叠运行。
+- 飞书视图自动创建/更新（11 个视图，支持过滤、排序、分组）；重建时先验证替代视图，再移除旧视图。
 - 事件去重：基于标题+时间+地点的 SHA-256 去重键，避免同一活动重复入库。
 - 抽取后校验：自动修正非法分类、超范围置信度、不合理时间。
 - 图片过滤：自动排除装饰性图片（<10KB、<80px、极端比例），大图（≥200×200px）跳过文件大小检查，只保留有效海报图。
@@ -210,6 +220,11 @@ http://localhost:8001
 - `GET /dashboard/sync-runs` — 仪表板同步运行记录
 - `GET /dashboard/feishu-link` — 飞书多维表格链接配置
 - `GET /dashboard/pipeline-status` — 数据管道状态（we-mp-rss 状态、最新入库、最后同步、归档统计）
+- `GET /dashboard/accounts-health` — 公众号新鲜度与 SLA（兼容入口）
+- `GET /automation/accounts-health` — 公众号级文章/活动产出与 SLA
+- `GET /automation/feishu-reconcile` — 只读预览本地与飞书 Base 差异
+- `POST /automation/feishu-reconcile` — 仅补建飞书缺失记录（写接口鉴权）
+- `POST /automation/collect-priority` — 立即触发优先公众号采集（写接口鉴权）
 - `GET /accounts` — 列出已订阅公众号
 - `GET /accounts/search/{kw}` — 搜索公众号（微信搜索）
 - `POST /accounts` — 添加公众号（代理到 we-mp-rss）
@@ -261,7 +276,7 @@ VISION_API_BASE_URL=https://open.bigmodel.cn/api/paas/v4
 VISION_API_MODEL=glm-4.6v
 VISION_API_TIMEOUT_SECONDS=60
 ```
-依赖：`pip install rapidocr_onnxruntime`
+依赖：`pip install -r requirements-ocr.txt`（或单独执行 `pip install rapidocr_onnxruntime`）
 
 **方案B：全多模态 API**（效果最好，但贵且慢）
 ```env
@@ -333,6 +348,22 @@ GET /diagnostics/config
 POST /events/{event_id}/sync-feishu
 GET /sync/logs?target=feishu_event
 ```
+
+### 自动化守护
+
+```env
+FEISHU_SYNC_RETRY_MAX=6
+FEISHU_SYNC_RETRY_BASE_MINUTES=15
+PRIORITY_ACCOUNTS=
+PRIORITY_COLLECTION_CRON=*/30 * * * *
+ACCOUNT_STALE_HOURS=36
+FEISHU_RECONCILE_ENABLED=true
+FEISHU_RECONCILE_CRON=30 3 * * *
+AUTOMATION_ALERTS_ENABLED=true
+AUTOMATION_ALERT_COOLDOWN_HOURS=6
+```
+
+`PRIORITY_ACCOUNTS` 使用逗号分隔公众号名称；为空时表示全部订阅。自动告警复用日报/周报的飞书收件人配置。对账写操作保持保守策略，只补建已明确从 Base 消失的活跃记录，隐藏、过滤或归档等终态记录不会恢复。
 
 ## 排障顺序
 

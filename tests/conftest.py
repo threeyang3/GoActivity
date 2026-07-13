@@ -39,6 +39,7 @@ def _clean_test_data():
         existing_log_ids = {r[0] for r in conn.execute(text("SELECT id FROM sync_logs")).fetchall()}
         existing_run_ids = {r[0] for r in conn.execute(text("SELECT run_id FROM sync_runs")).fetchall()}
         existing_image_ids = {r[0] for r in conn.execute(text("SELECT image_id FROM images")).fetchall()}
+        existing_setting_ids = {r[0] for r in conn.execute(text("SELECT id FROM app_settings")).fetchall()}
 
     yield
 
@@ -63,6 +64,9 @@ def _clean_test_data():
         # articles
         new_ids = {r[0] for r in conn.execute(text("SELECT article_id FROM articles")).fetchall()} - existing_article_ids
         _batch_delete(conn, "articles", "article_id", new_ids)
+
+        new_ids = {r[0] for r in conn.execute(text("SELECT id FROM app_settings")).fetchall()} - existing_setting_ids
+        _batch_delete(conn, "app_settings", "id", new_ids)
 
 
 @pytest.fixture()

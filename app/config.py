@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     we_mp_rss_api_base: str = "/api/v1/wx"
     we_mp_rss_access_key: str = ""
     we_mp_rss_secret_key: str = ""
+    we_mp_rss_webhook_token: str = ""
     feishu_provider: str = "auto"
     feishu_cli_path: str = "lark-cli"
     feishu_cli_as: str = "user"
@@ -30,6 +31,15 @@ class Settings(BaseSettings):
     feishu_dry_run: bool = True
     feishu_max_retries: int = 3
     feishu_retry_delay_seconds: float = 1.0
+    feishu_sync_retry_max: int = 6
+    feishu_sync_retry_base_minutes: int = 15
+    feishu_reconcile_enabled: bool = True
+    feishu_reconcile_cron: str = "30 3 * * *"
+    automation_alerts_enabled: bool = True
+    automation_alert_cooldown_hours: int = 6
+    account_stale_hours: int = 36
+    priority_accounts: str = ""
+    priority_collection_cron: str = "*/30 * * * *"
     # OCR Provider 配置
     ocr_provider: str = "mock"  # mock | disabled | rapid | openai_compatible
     ocr_api_key: str = ""

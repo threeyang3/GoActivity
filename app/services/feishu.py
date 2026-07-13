@@ -2,7 +2,7 @@ import json
 import logging
 import shutil
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -100,14 +100,25 @@ class FeishuAdapter:
                 "stdout": result["stdout"],
                 "stderr": result["stderr"],
             }
-        result = self.client.upsert_event(event)
+        try:
+            result = self.client.upsert_event(event)
+        except FeishuError as exc:
+            self._mark_sync_failure(event, str(exc))
+            self.db.commit()
+            return {"status": event.status, "dry_run": False, "stdout": "", "stderr": str(exc)}
         if result["return_code"] == 0:
             event.status = EventStatus.SYNCED
+            event.feishu_retry_count = 0
+            event.feishu_next_retry_at = None
+            event.feishu_last_error = ""
             if not event.feishu_record_id:
                 event.feishu_record_id = result.get("record_id", "")
             event.updated_at = utcnow()
         else:
-            event.status = EventStatus.FAILED_SYNC
+            self._mark_sync_failure(
+                event,
+                result.get("stderr") or result.get("stdout") or "飞书同步失败",
+            )
         self.db.commit()
         return {
             "status": event.status,
@@ -115,6 +126,16 @@ class FeishuAdapter:
             "stdout": result["stdout"],
             "stderr": result["stderr"],
         }
+
+    def _mark_sync_failure(self, event: Event, error: str) -> None:
+        event.status = EventStatus.FAILED_SYNC
+        event.feishu_retry_count = (event.feishu_retry_count or 0) + 1
+        delay_minutes = min(
+            self.client.settings.feishu_sync_retry_base_minutes * (2 ** (event.feishu_retry_count - 1)),
+            24 * 60,
+        )
+        event.feishu_next_retry_at = utcnow() + timedelta(minutes=delay_minutes)
+        event.feishu_last_error = error[:1000]
 
 
 class BaseFeishuClient:

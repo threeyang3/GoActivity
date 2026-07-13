@@ -116,7 +116,7 @@ class ServiceController:
             pass
         return open(path, 'a', encoding='utf-8')
 
-    def start_goactivity(self) -> bool:
+    def start_goactivity(self, *, start_monitor: bool = True) -> bool:
         """Start GoActivity service."""
         svc = self.goactivity
         if svc.running:
@@ -152,9 +152,10 @@ class ServiceController:
                 svc.status = "starting"
 
             # Start monitor
-            t = threading.Thread(target=self._monitor_service, args=(svc,), daemon=True)
-            t.start()
-            self._monitor_threads.append(t)
+            if start_monitor:
+                t = threading.Thread(target=self._monitor_service, args=(svc,), daemon=True)
+                t.start()
+                self._monitor_threads.append(t)
             return True
         except Exception as e:
             logger.error("Failed to start %s: %s", svc.name, e)
@@ -172,7 +173,7 @@ class ServiceController:
         time.sleep(1)
         self.start_goactivity()
 
-    def start_werss(self) -> bool:
+    def start_werss(self, *, start_monitor: bool = True) -> bool:
         """Start WeRSS service."""
         svc = self.werss
         if svc.running:
@@ -206,9 +207,10 @@ class ServiceController:
             else:
                 svc.status = "starting"
 
-            t = threading.Thread(target=self._monitor_service, args=(svc,), daemon=True)
-            t.start()
-            self._monitor_threads.append(t)
+            if start_monitor:
+                t = threading.Thread(target=self._monitor_service, args=(svc,), daemon=True)
+                t.start()
+                self._monitor_threads.append(t)
             return True
         except Exception as e:
             logger.error("Failed to start %s: %s", svc.name, e)
@@ -335,9 +337,9 @@ class ServiceController:
             return False
 
         if svc.name == "GoActivity":
-            self.start_goactivity()
+            self.start_goactivity(start_monitor=False)
         else:
-            self.start_werss()
+            self.start_werss(start_monitor=False)
 
         if svc.status == "running":
             svc.restart_count = 0

@@ -47,6 +47,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
     {"key": "we_mp_rss_api_base", "label": "WeRSS API 路径", "category": "werss", "type": "string", "default": "/api/v1/wx", "requires_restart": False, "is_secret": False},
     {"key": "we_mp_rss_access_key", "label": "WeRSS Access Key", "category": "werss", "type": "string", "default": "", "requires_restart": False, "is_secret": True},
     {"key": "we_mp_rss_secret_key", "label": "WeRSS Secret Key", "category": "werss", "type": "string", "default": "", "requires_restart": False, "is_secret": True},
+    {"key": "we_mp_rss_webhook_token", "label": "WeRSS Webhook Token", "category": "werss", "type": "string", "default": "", "requires_restart": False, "is_secret": True, "help": "远程 Webhook 请求使用 X-GoActivity-Webhook-Token。"},
     {"key": "feishu_provider", "label": "飞书提供者", "category": "feishu", "type": "select", "options": ["auto", "lark_cli", "openapi"], "default": "auto", "requires_restart": False, "is_secret": False},
     {"key": "feishu_cli_path", "label": "lark-cli 路径", "category": "feishu", "type": "string", "default": "lark-cli", "requires_restart": False, "is_secret": False},
     {"key": "feishu_base_url", "label": "飞书 API 地址", "category": "feishu", "type": "string", "default": "https://open.feishu.cn", "requires_restart": False, "is_secret": False},
@@ -60,6 +61,15 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
     {"key": "feishu_bot_app_secret", "label": "机器人 App Secret", "category": "feishu_bot", "type": "string", "default": "", "requires_restart": True, "is_secret": True},
     {"key": "auto_sync_cron", "label": "自动同步 Cron", "category": "automation", "type": "string", "default": "0 * * * *", "requires_restart": False, "is_secret": False},
     {"key": "auto_archive_expired_days", "label": "自动归档天数", "category": "automation", "type": "integer", "default": 30, "requires_restart": False, "is_secret": False},
+    {"key": "feishu_sync_retry_max", "label": "飞书最大重试次数", "category": "automation", "type": "integer", "default": 6, "requires_restart": False, "is_secret": False},
+    {"key": "feishu_sync_retry_base_minutes", "label": "飞书重试基础间隔（分钟）", "category": "automation", "type": "integer", "default": 15, "requires_restart": False, "is_secret": False},
+    {"key": "feishu_reconcile_enabled", "label": "启用飞书每日对账", "category": "automation", "type": "boolean", "default": True, "requires_restart": False, "is_secret": False},
+    {"key": "feishu_reconcile_cron", "label": "飞书对账 Cron", "category": "automation", "type": "string", "default": "30 3 * * *", "requires_restart": False, "is_secret": False},
+    {"key": "automation_alerts_enabled", "label": "启用自动化告警", "category": "automation", "type": "boolean", "default": True, "requires_restart": False, "is_secret": False},
+    {"key": "automation_alert_cooldown_hours", "label": "告警冷却（小时）", "category": "automation", "type": "integer", "default": 6, "requires_restart": False, "is_secret": False},
+    {"key": "account_stale_hours", "label": "公众号停更告警阈值（小时）", "category": "automation", "type": "integer", "default": 36, "requires_restart": False, "is_secret": False},
+    {"key": "priority_accounts", "label": "重点公众号（逗号分隔）", "category": "automation", "type": "string", "default": "", "requires_restart": False, "is_secret": False},
+    {"key": "priority_collection_cron", "label": "重点公众号采集 Cron", "category": "automation", "type": "string", "default": "*/30 * * * *", "requires_restart": False, "is_secret": False},
     {"key": "feishu_report_daily_enabled", "label": "启用日报", "category": "reports", "type": "boolean", "default": True, "requires_restart": False, "is_secret": False},
     {"key": "feishu_report_daily_cron", "label": "日报 Cron", "category": "reports", "type": "string", "default": "0 9 * * *", "requires_restart": False, "is_secret": False},
     {"key": "feishu_report_weekly_enabled", "label": "启用周报", "category": "reports", "type": "boolean", "default": True, "requires_restart": False, "is_secret": False},
@@ -77,6 +87,9 @@ RESCHEDULE_KEYS: set[str] = {
     "feishu_report_weekly_cron",
     "feishu_report_daily_enabled",
     "feishu_report_weekly_enabled",
+    "feishu_reconcile_cron",
+    "feishu_reconcile_enabled",
+    "priority_collection_cron",
 }
 
 
@@ -164,6 +177,7 @@ class SettingsService:
             if applied:
                 db.commit()
 
+        old_secret_path = self._secret_path()
         secret_store = self._load_secret_store()
         for key in secret_applied:
             secret_store[key] = secret_updates[key]
@@ -171,6 +185,11 @@ class SettingsService:
             secret_store.pop(key, None)
         if secret_applied or clear_secrets:
             self._save_secret_store(secret_store)
+        new_storage_dir = normal_updates.get("storage_dir")
+        if "storage_dir" in applied and new_storage_dir:
+            new_secret_path = Path(str(new_storage_dir)) / "settings.secrets.json"
+            if new_secret_path.resolve() != old_secret_path.resolve():
+                self._save_secret_store(secret_store, path=new_secret_path)
 
         changed = applied + secret_applied + clear_secrets
         rescheduled = [key for key in changed if key in RESCHEDULE_KEYS]
@@ -294,8 +313,8 @@ class SettingsService:
             logger.warning("Failed to read secret store %s: %s", path, exc)
             return {}
 
-    def _save_secret_store(self, data: dict[str, str]) -> None:
-        path = self._secret_path()
+    def _save_secret_store(self, data: dict[str, str], path: Path | None = None) -> None:
+        path = path or self._secret_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         try:

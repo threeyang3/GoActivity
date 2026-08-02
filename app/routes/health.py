@@ -6,6 +6,7 @@
 - error: 核心服务（数据库、主服务）不可用
 """
 
+import importlib.util
 import logging
 import shutil
 import time
@@ -65,11 +66,12 @@ def _check_ocr(settings) -> dict[str, Any]:
     if provider == "mock":
         return {"status": "mock", "provider": provider}
     if provider == "rapid":
-        try:
-            import rapidocr_onnxruntime  # noqa: F401
+        # Do not import the native OCR runtime from a high-frequency health
+        # endpoint.  A mismatched Python/ONNX DLL can terminate the process
+        # before Python has a chance to raise ImportError.
+        if importlib.util.find_spec("rapidocr_onnxruntime") is not None:
             return {"status": "ok", "provider": provider}
-        except ImportError:
-            return {"status": "error", "provider": provider, "detail": "rapidocr_onnxruntime 未安装"}
+        return {"status": "error", "provider": provider, "detail": "rapidocr_onnxruntime 未安装"}
     if provider in ("openai", "openai_compatible"):
         if not settings.ocr_api_key:
             return {"status": "not_configured", "provider": provider, "detail": "缺少 OCR_API_KEY"}
@@ -142,7 +144,14 @@ def _check_scheduler(obj: Any, name: str) -> dict[str, Any]:
     scheduler = getattr(obj, "scheduler", None)
     if scheduler is None:
         return {"status": "unknown", "detail": f"{name} 无 scheduler"}
-    return {"status": "ok" if scheduler.running else "error"}
+    status_getter = getattr(obj, "get_scheduler_status", None)
+    if callable(status_getter):
+        try:
+            return status_getter()
+        except Exception as exc:
+            logger.warning("Failed to inspect %s scheduler: %s", name, exc)
+            return {"status": "degraded", "running": bool(scheduler.running), "detail": str(exc)[:200]}
+    return {"status": "ok" if scheduler.running else "error", "running": bool(scheduler.running)}
 
 
 def _check_config(settings) -> dict[str, Any]:
@@ -209,11 +218,11 @@ def health(request: Request) -> dict[str, Any]:
         has_degraded = True
 
     checks["auto_sync_scheduler"] = _check_scheduler(getattr(request.app.state, "auto_sync", None), "auto_sync")
-    if checks["auto_sync_scheduler"]["status"] == "error":
+    if checks["auto_sync_scheduler"]["status"] in {"error", "degraded"}:
         has_degraded = True
 
     checks["report_scheduler"] = _check_scheduler(getattr(request.app.state, "report_scheduler", None), "report_scheduler")
-    if checks["report_scheduler"]["status"] == "error":
+    if checks["report_scheduler"]["status"] in {"error", "degraded"}:
         has_degraded = True
 
     bot_consumer = getattr(request.app.state, "bot_consumer", None)

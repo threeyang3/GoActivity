@@ -70,13 +70,13 @@ def get_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
     # 事件统计 - 合并为单次查询
     event_stats = db.query(
         func.count(Event.id).label("total"),
-        func.sum(case((Event.status.notin_(EventStatus.TERMINAL_STATUSES), 1), else_=0)).label("active"),
-        func.sum(case((Event.status == EventStatus.SYNCED, 1), else_=0)).label("synced"),
-        func.sum(case((Event.status.in_([EventStatus.EXTRACTED, EventStatus.PENDING_AI]), 1), else_=0)).label("pending"),
-        func.sum(case((Event.status == EventStatus.FAILED_SYNC, 1), else_=0)).label("failed_sync"),
-        func.sum(case((Event.status == EventStatus.FAILED_EXTRACT, 1), else_=0)).label("failed_extract"),
-        func.sum(case((Event.status == EventStatus.NEEDS_IMAGE_RETRY, 1), else_=0)).label("needs_image_retry"),
-        func.sum(case((Event.status == EventStatus.ARCHIVED, 1), else_=0)).label("archived"),
+        func.coalesce(func.sum(case((Event.status.notin_(EventStatus.TERMINAL_STATUSES), 1), else_=0)), 0).label("active"),
+        func.coalesce(func.sum(case((Event.status == EventStatus.SYNCED, 1), else_=0)), 0).label("synced"),
+        func.coalesce(func.sum(case((Event.status.in_([EventStatus.EXTRACTED, EventStatus.PENDING_AI]), 1), else_=0)), 0).label("pending"),
+        func.coalesce(func.sum(case((Event.status == EventStatus.FAILED_SYNC, 1), else_=0)), 0).label("failed_sync"),
+        func.coalesce(func.sum(case((Event.status == EventStatus.FAILED_EXTRACT, 1), else_=0)), 0).label("failed_extract"),
+        func.coalesce(func.sum(case((Event.status == EventStatus.NEEDS_IMAGE_RETRY, 1), else_=0)), 0).label("needs_image_retry"),
+        func.coalesce(func.sum(case((Event.status == EventStatus.ARCHIVED, 1), else_=0)), 0).label("archived"),
     ).first()
 
     total_events = event_stats.total if event_stats else 0

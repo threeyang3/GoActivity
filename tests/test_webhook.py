@@ -28,7 +28,7 @@ def test_we_mp_rss_webhook_filters_non_event_promo() -> None:
         "id": "demo-non-event-001",
         "title": "知行并进强本领 挺膺担当建新功",
         "account_name": "北大团委",
-        "publish_time": "2026-06-15 10:00:00",
+        "publish_time": "2026-07-14 10:00:00",
         "url": "https://example.com/non-event",
         "content": "北大青年以青春之名在祖国大地之上书写时代答卷，弘扬时代新声。",
         "content_html": "<p>北大青年以青春之名在祖国大地之上书写时代答卷，弘扬时代新声。</p>",

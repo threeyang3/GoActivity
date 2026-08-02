@@ -11,7 +11,7 @@
 ## 方式一：通过 GoActivity Web 管理页面（推荐）
 
 1. 访问 `http://localhost:8000/`
-2. 滚动到「公众号管理」区块
+2. 进入「公众号」标签页
 3. 在搜索框输入公众号名称，点击「搜索」
 4. 在搜索结果中点击「添加」按钮
 5. 系统自动订阅并开始拉取历史文章
@@ -19,6 +19,8 @@
 添加完成后，可在列表中：
 - 点击「刷新文章」手动触发该公众号的文章更新
 - 点击「删除」取消订阅
+
+添加后进入「自动化」标签页查看公众号健康度。新账号在首次成功采集前显示为 `never_collected` 是正常状态；成功采集后，页面会显示文章采集结果、活动产出和 SLA 状态。
 
 ## 方式二：通过 we-mp-rss 管理界面
 
@@ -44,7 +46,7 @@ WE_MP_RSS_SECRET_KEY=SK...
 新订阅的公众号需要拉取历史文章：
 
 ```bash
-# 拉取最近 50 篇文章
+# 拉取最新 50 篇文章
 curl -X POST "http://localhost:8000/sync/we-mp-rss/articles?limit=50"
 
 # 或者通过 RSS 方式拉取（不需要 AK/SK）
@@ -67,6 +69,14 @@ curl -X POST "http://localhost:8000/sync/auto"
 
 或在 Web 管理后台点击「触发同步」按钮。
 
+如需立即优先采集重点公众号，可在「自动化」标签页点击优先采集，或调用：
+
+```text
+POST http://localhost:8000/automation/collect-priority
+```
+
+接口返回 `selected`、`attempted`、`triggered`、`failed` 和 `skipped` 数量；采集完成后系统会在约 2 分钟内接续一次完整同步。
+
 ## 常见问题
 
 ### Q: 新公众号的文章没有被自动拉取？
@@ -74,7 +84,8 @@ curl -X POST "http://localhost:8000/sync/auto"
 A: 检查以下几点：
 1. we-mp-rss 是否已成功订阅该公众号
 2. `AUTO_SYNC_CRON` 配置是否正确（默认每小时一次）
-3. 查看同步日志：`GET /sync/runs/latest/we-mp-rss-json`
+3. 查看公众号健康度：`GET /automation/accounts-health`
+4. 查看同步日志：`GET /sync/runs/latest/we-mp-rss-json`
 
 ### Q: 文章被分类为「非活动」？
 

@@ -10,7 +10,7 @@ def test_manual_sync_allows_only_one_active_run(monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
-    def execute():
+    def execute(_trigger="manual"):
         started.set()
         release.wait(timeout=2)
         return {"articles_fetched": 0, "events_synced": 0, "events_failed": 0}

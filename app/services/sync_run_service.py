@@ -33,6 +33,23 @@ class SyncRunService:
         self.db.refresh(run)
         return run
 
+    def finish_degraded(
+        self,
+        run: SyncRun,
+        imported_count: int,
+        results: list[dict],
+        error_message: str,
+    ) -> SyncRun:
+        """Persist a completed run that had recoverable or partial failures."""
+        run.status = "degraded"
+        run.imported_count = imported_count
+        run.result_preview = dumps_json(results[:5])
+        run.error_message = error_message[:1000]
+        run.completed_at = utcnow()
+        self.db.commit()
+        self.db.refresh(run)
+        return run
+
     def finish_failure(self, run: SyncRun, error_message: str) -> SyncRun:
         run.status = "failed"
         run.error_message = error_message

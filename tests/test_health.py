@@ -1,8 +1,11 @@
 """健康检查测试 — 验证三级状态逻辑。"""
 
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.routes.health import _check_ocr
 
 
 def test_health_returns_ok_when_healthy():
@@ -52,3 +55,16 @@ def test_health_database_error_leads_to_error_status():
         db_check = data["checks"]["database"]
         if db_check["status"] == "error":
             assert data["status"] == "error"
+
+
+def test_rapidocr_health_check_does_not_import_native_runtime(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "app.routes.health.importlib.util.find_spec",
+        lambda name: calls.append(name) or object(),
+    )
+
+    result = _check_ocr(SimpleNamespace(ocr_provider="rapid"))
+
+    assert result == {"status": "ok", "provider": "rapid"}
+    assert calls == ["rapidocr_onnxruntime"]

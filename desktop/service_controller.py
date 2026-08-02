@@ -22,19 +22,37 @@ SERVICE_HOST = "127.0.0.1"
 RSS_PORT = 8001
 RSS_HOST = "127.0.0.1"
 RSS_DIR = Path(__file__).parent.parent / "we-mp-rss"
+PROJECT_ROOT = Path(__file__).parent.parent
 
 MAX_AUTO_RESTARTS = 3
 RESTART_BACKOFF_BASE = 5  # seconds
 
 
-def find_rss_python() -> str:
-    """Find the Python interpreter for we-mp-rss."""
-    # Check local venv first
-    for sub in (".venv", "venv"):
-        p = RSS_DIR / sub / "Scripts" / "python.exe"
-        if p.exists():
-            return str(p)
+def _find_python(env_var: str, project_dir: Path, conda_env: str) -> str:
+    """Resolve a service interpreter without inheriting an incompatible GUI Python."""
+    configured = os.environ.get(env_var)
+    if configured and Path(configured).is_file():
+        return configured
+
+    candidates = [
+        *(project_dir / sub / "Scripts" / "python.exe" for sub in (".venv", "venv")),
+        Path(rf"D:\miniconda3\envs\{conda_env}\python.exe"),
+        Path.home() / "miniconda3" / "envs" / conda_env / "python.exe",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
     return sys.executable
+
+
+def find_goactivity_python() -> str:
+    """Find the supported Python interpreter for GoActivity."""
+    return _find_python("GOACTIVITY_PYTHON", PROJECT_ROOT, "goactivity")
+
+
+def find_rss_python() -> str:
+    """Find the supported Python interpreter for we-mp-rss."""
+    return _find_python("WEMP_RSS_PYTHON", RSS_DIR, "we-mp-rss")
 
 
 def check_port(host: str, port: int) -> bool:
@@ -54,8 +72,16 @@ def check_health(host: str, port: int, path: str = "/health", timeout: int = 3) 
         url = f"http://{host}:{port}{path}"
         req = urllib.request.Request(url, method='GET')
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read())
-            return data.get("status", "error")
+            body = resp.read()
+            # Some services expose only a docs/readiness URL.  A successful HTTP
+            # response is healthy even when its body is HTML or has no status key.
+            try:
+                data = json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return "ok"
+            if isinstance(data, dict) and "status" in data:
+                return str(data["status"])
+            return "ok"
     except Exception:
         return "unreachable"
 
@@ -130,7 +156,7 @@ class ServiceController:
             self._notify(svc)
             return True
 
-        cmd = [sys.executable, 'start_service.py', '--start', '--host', svc.host, '--port', str(svc.port)]
+        cmd = [find_goactivity_python(), 'start_service.py', '--start', '--host', svc.host, '--port', str(svc.port)]
         try:
             svc._log_handle = self._open_rotating_log(svc.log_path)
             svc.process = subprocess.Popen(
@@ -188,11 +214,14 @@ class ServiceController:
 
         rss_python = find_rss_python()
         cmd = [rss_python, 'main.py', '-job', 'True', '-init', 'True']
+        child_env = os.environ.copy()
+        child_env.setdefault("WE_RSS.AUTH", "True")
         try:
             svc._log_handle = self._open_rotating_log(svc.log_path)
             svc.process = subprocess.Popen(
                 cmd, cwd=str(RSS_DIR), stdout=svc._log_handle, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
+                env=child_env,
             )
             svc.running = True
             svc.managed = True

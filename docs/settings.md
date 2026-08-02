@@ -99,13 +99,18 @@ pip install -r requirements-ocr.txt
 | `FEISHU_SYNC_RETRY_BASE_MINUTES` | `15` | 指数退避基数，实际间隔为 15/30/60... 分钟，最长 24 小时 |
 | `PRIORITY_ACCOUNTS` | 空 | 逗号分隔的高优先级公众号名称；空值表示全部订阅 |
 | `PRIORITY_COLLECTION_CRON` | `*/30 * * * *` | 高频采集触发周期；成功后 2 分钟接续完整同步 |
-| `ACCOUNT_STALE_HOURS` | `36` | 公众号最近发文/入库超过该时长时标记 SLA 异常 |
+| `AUTO_SYNC_STALE_MINUTES` | `180` | 自动同步超过该延迟仍未完成时，健康检查标记为 degraded |
+| `FEISHU_RECONCILE_MAX_MISSING_RATIO` | `0.2` | 人工对账修复允许的最大缺失比例；定时对账始终只读检测 |
+| `FEISHU_RECONCILE_SNAPSHOT_HOURS` | `24` | 对账稳定快照的最长确认有效期 |
+| `ACCOUNT_STALE_HOURS` | `36` | 公众号最后一次发文/入库超过该时长时标记 SLA 异常 |
 | `FEISHU_RECONCILE_ENABLED` | `true` | 是否启用每日 Base 对账 |
 | `FEISHU_RECONCILE_CRON` | `30 3 * * *` | 飞书对账周期 |
 | `AUTOMATION_ALERTS_ENABLED` | `true` | 是否向报告收件人发送链路告警 |
 | `AUTOMATION_ALERT_COOLDOWN_HOURS` | `6` | 同类告警冷却时间 |
 
 对账默认只读。定时任务和管理页“修复缺失”只会重建本地存在、飞书记录已明确缺失的活跃数据；隐藏、过滤或归档等终态活动会被跳过。字段漂移与附件缺失只展示并告警，避免自动覆盖人工维护内容。
+
+修改自动化配置后，可通过 `GET /automation/status` 检查调度任务是否已注册、下一次执行时间、同步延迟和维护结果；通过 `GET /automation/feishu-reconcile` 查看只读对账预览。不要把“任务已注册”误认为“本次任务已成功”，具体结果应同时查看 `last_sync`、维护结果和 `GET /sync/runs`。
 
 ## 局域网访问
 

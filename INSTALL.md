@@ -216,7 +216,7 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\GoActivity
 
 | 文件 | 说明 |
 |------|------|
-| `gui_manager.py` | 系统托盘管理器（管理双服务） |
+| `desktop/` | PySide6 桌面管理器（管理双服务） |
 | `start_service.py` | GoActivity 服务启动脚本 |
 | `generate_icon.py` | 图标生成脚本 |
 | `create_shortcut.bat` | 快捷方式创建（含图标设置） |

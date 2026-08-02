@@ -82,6 +82,32 @@ class ReportScheduler:
         self.settings = get_settings()
         self.start()
 
+    def get_scheduler_status(self) -> dict:
+        """Return task registration and next-run information for health checks."""
+        required_jobs = []
+        if self.settings.feishu_report_daily_enabled and self.settings.feishu_report_daily_cron:
+            required_jobs.append("daily_report")
+        if self.settings.feishu_report_weekly_enabled and self.settings.feishu_report_weekly_cron:
+            required_jobs.append("weekly_report")
+        jobs = [
+            {
+                "id": job.id,
+                "name": job.name,
+                "next_run_at": job.next_run_time.isoformat() if job.next_run_time else None,
+            }
+            for job in self.scheduler.get_jobs()
+        ]
+        job_ids = {job["id"] for job in jobs}
+        missing_jobs = [job_id for job_id in required_jobs if job_id not in job_ids]
+        running = bool(self.scheduler.running)
+        return {
+            "status": "error" if not running else ("degraded" if missing_jobs else "ok"),
+            "running": running,
+            "required_jobs": required_jobs,
+            "missing_jobs": missing_jobs,
+            "jobs": jobs,
+        }
+
     def _send_report(self, report_type: str) -> None:
         """发送报告（日报或周报）。"""
         logger.info("Sending %s report...", report_type)

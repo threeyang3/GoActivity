@@ -26,6 +26,8 @@ class ViewConfig:
     sort_config: dict[str, Any] | None = None
     group_config: dict[str, Any] | None = None
     visible_fields: list[str] | None = None
+    card_config: dict[str, Any] | None = None
+    timebar_config: dict[str, Any] | None = None
 
 
 VIEW_CONFIGS: list[ViewConfig] = [
@@ -216,6 +218,52 @@ VIEW_CONFIGS: list[ViewConfig] = [
             "主办方", "公众号", "原文链接", "摘要",
         ],
     ),
+    ViewConfig(
+        name="活动日历",
+        type="calendar",
+        filter_config={
+            "logic": "and",
+            "conditions": [
+                ["状态", "!=", ["failed_sync"]],
+                ["状态", "!=", ["ignored_non_event"]],
+                ["状态", "!=", ["expired_hidden"]],
+                ["状态", "!=", ["archived"]],
+                ["时间状态", "!=", ["unknown"]],
+                ["时间状态", "!=", ["past"]],
+                ["时间状态", "!=", ["expired"]],
+            ],
+        },
+        visible_fields=[
+            "标题", "活动类型", "开始时间", "结束时间", "活动地点",
+            "主办方", "嘉宾", "票价信息", "报名方式", "报名截止", "时间状态",
+        ],
+        timebar_config={
+            "start_time": "开始时间",
+            "end_time": "结束时间",
+            "title": "标题",
+        },
+    ),
+    ViewConfig(
+        name="活动海报画册",
+        type="gallery",
+        filter_config={
+            "logic": "and",
+            "conditions": [
+                ["状态", "!=", ["ignored_non_event"]],
+                ["状态", "!=", ["expired_hidden"]],
+                ["状态", "!=", ["archived"]],
+                ["时间状态", "!=", ["expired"]],
+                ["时间状态", "!=", ["past"]],
+                ["海报附件", "non_empty"],
+            ],
+        },
+        sort_config={"sort_config": [{"field": "开始时间", "desc": False}]},
+        visible_fields=[
+            "标题", "活动类型", "开始时间", "活动地点", "主办方",
+            "嘉宾", "票价信息", "报名截止", "时间状态", "海报附件",
+        ],
+        card_config={"cover_field": "海报附件"},
+    ),
 ]
 
 
@@ -247,6 +295,7 @@ class FeishuViewSetupService:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._command_prefix: list[str] = self._build_command_prefix()
+        self._field_ids: dict[str, str] | None = None
 
     def _build_command_prefix(self) -> list[str]:
         """构建 lark-cli 命令前缀。"""
@@ -340,6 +389,85 @@ class FeishuViewSetupService:
         ]
         data = self._run_cli(command)
         return data.get("data", {}).get("visible_fields", [])
+
+    def get_field_ids(self) -> dict[str, str]:
+        """获取字段名到字段 ID 的映射，用于校验卡片和时间栏配置。"""
+        if self._field_ids is None:
+            command = [
+                *self._command_prefix,
+                "base",
+                "+field-list",
+                "--as", self.settings.feishu_cli_as,
+                "--base-token", self.settings.feishu_bitable_app_token,
+                "--table-id", self.settings.feishu_bitable_table_id,
+                "--format", "json",
+            ]
+            data = self._run_cli(command)
+            fields = data.get("data", {}).get("fields", [])
+            self._field_ids = {
+                field["name"]: field["id"]
+                for field in fields
+                if field.get("name") and field.get("id")
+            }
+        return self._field_ids
+
+    def get_card(self, view_id: str) -> dict[str, Any]:
+        """读取画廊/看板卡片配置。"""
+        command = [
+            *self._command_prefix,
+            "base",
+            "+view-get-card",
+            "--as", self.settings.feishu_cli_as,
+            "--base-token", self.settings.feishu_bitable_app_token,
+            "--table-id", self.settings.feishu_bitable_table_id,
+            "--view-id", view_id,
+            "--format", "json",
+        ]
+        return self._run_cli(command).get("data", {}).get("card", {})
+
+    def set_card(self, view_id: str, config: dict[str, Any]) -> None:
+        """设置画廊/看板卡片配置。"""
+        command = [
+            *self._command_prefix,
+            "base",
+            "+view-set-card",
+            "--as", self.settings.feishu_cli_as,
+            "--base-token", self.settings.feishu_bitable_app_token,
+            "--table-id", self.settings.feishu_bitable_table_id,
+            "--view-id", view_id,
+            "--json", json.dumps(config, ensure_ascii=False),
+            "--format", "json",
+        ]
+        self._run_cli(command)
+
+    def get_timebar(self, view_id: str) -> dict[str, Any]:
+        """读取日历/甘特图时间栏配置。"""
+        command = [
+            *self._command_prefix,
+            "base",
+            "+view-get-timebar",
+            "--as", self.settings.feishu_cli_as,
+            "--base-token", self.settings.feishu_bitable_app_token,
+            "--table-id", self.settings.feishu_bitable_table_id,
+            "--view-id", view_id,
+            "--format", "json",
+        ]
+        return self._run_cli(command).get("data", {}).get("timebar", {})
+
+    def set_timebar(self, view_id: str, config: dict[str, Any]) -> None:
+        """设置日历/甘特图时间栏配置。"""
+        command = [
+            *self._command_prefix,
+            "base",
+            "+view-set-timebar",
+            "--as", self.settings.feishu_cli_as,
+            "--base-token", self.settings.feishu_bitable_app_token,
+            "--table-id", self.settings.feishu_bitable_table_id,
+            "--view-id", view_id,
+            "--json", json.dumps(config, ensure_ascii=False),
+            "--format", "json",
+        ]
+        self._run_cli(command)
 
     def create_view(self, config: ViewConfig) -> str:
         """创建单个视图，返回 view_id。"""
@@ -444,7 +572,7 @@ class FeishuViewSetupService:
                 self._verify_view_config(view_id, config)
                 return ViewSetupResult(name=config.name, action="updated", view_id=view_id)
             except Exception as exc:
-                if "visible_fields mismatch" in str(exc):
+                if any(marker in str(exc) for marker in ("visible_fields mismatch", "card mismatch", "timebar mismatch")):
                     try:
                         logger.warning("View %r did not apply visible fields cleanly, recreating", config.name)
                         return self._recreate_view(config, view_id)
@@ -511,21 +639,46 @@ class FeishuViewSetupService:
             self.set_visible_fields(view_id, config.visible_fields)
             logger.debug("Set visible fields for view %r", config.name)
 
+        if config.card_config is not None:
+            self.set_card(view_id, config.card_config)
+            logger.debug("Set card config for view %r", config.name)
+
+        if config.timebar_config is not None:
+            self.set_timebar(view_id, config.timebar_config)
+            logger.debug("Set timebar config for view %r", config.name)
+
     def _verify_view_config(self, view_id: str, config: ViewConfig) -> None:
         """验证关键视图配置已经真正生效�?"""
-        if not config.visible_fields:
-            return
-
-        actual_fields = self.get_visible_fields(view_id)
-        if actual_fields != config.visible_fields:
-            time.sleep(1.0)
-            self.set_visible_fields(view_id, config.visible_fields)
-            time.sleep(1.0)
+        if config.visible_fields:
             actual_fields = self.get_visible_fields(view_id)
-        if actual_fields != config.visible_fields:
-            raise RuntimeError(
-                f"visible_fields mismatch for {config.name}: expected {config.visible_fields}, got {actual_fields}"
-            )
+            if actual_fields != config.visible_fields:
+                time.sleep(1.0)
+                self.set_visible_fields(view_id, config.visible_fields)
+                time.sleep(1.0)
+                actual_fields = self.get_visible_fields(view_id)
+            if actual_fields != config.visible_fields:
+                raise RuntimeError(
+                    f"visible_fields mismatch for {config.name}: expected {config.visible_fields}, got {actual_fields}"
+                )
+
+        field_ids = self.get_field_ids() if config.card_config or config.timebar_config else {}
+
+        if config.card_config:
+            actual_card = self.get_card(view_id)
+            expected_cover = field_ids.get(config.card_config.get("cover_field"), config.card_config.get("cover_field"))
+            if actual_card.get("cover_field") != expected_cover:
+                raise RuntimeError(
+                    f"card mismatch for {config.name}: expected {expected_cover}, got {actual_card.get('cover_field')}"
+                )
+
+        if config.timebar_config:
+            actual_timebar = self.get_timebar(view_id)
+            for key, expected_value in config.timebar_config.items():
+                expected_ref = field_ids.get(expected_value, expected_value)
+                if actual_timebar.get(key) != expected_ref:
+                    raise RuntimeError(
+                        f"timebar mismatch for {config.name}: expected {key}={expected_ref}, got {actual_timebar.get(key)}"
+                    )
 
     def setup_all_views(self, configs: list[ViewConfig] | None = None) -> SetupAllResult:
         """批量设置所有视图（幂等）。"""

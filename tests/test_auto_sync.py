@@ -59,3 +59,18 @@ def test_trigger_collection_polls_remote_candidates(monkeypatch, db) -> None:
 
     assert candidates == [{"article_id": "new-1"}]
     assert calls["fetch"] == 2
+
+
+def test_scheduler_status_reports_missing_jobs(monkeypatch) -> None:
+    service = AutoSyncService()
+    service.settings.auto_sync_cron = "0 * * * *"
+    service.settings.priority_collection_cron = "*/30 * * * *"
+    service.settings.feishu_reconcile_enabled = True
+    service.settings.feishu_reconcile_cron = "30 3 * * *"
+    monkeypatch.setattr(service.scheduler, "get_jobs", lambda: [])
+
+    result = service.get_scheduler_status()
+
+    assert result["status"] == "error"
+    assert result["missing_jobs"] == ["auto_sync", "priority_collection", "feishu_reconcile"]
+    assert result["stale"] is True

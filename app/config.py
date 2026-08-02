@@ -35,11 +35,14 @@ class Settings(BaseSettings):
     feishu_sync_retry_base_minutes: int = 15
     feishu_reconcile_enabled: bool = True
     feishu_reconcile_cron: str = "30 3 * * *"
+    feishu_reconcile_max_missing_ratio: float = 0.2
+    feishu_reconcile_snapshot_hours: int = 24
     automation_alerts_enabled: bool = True
     automation_alert_cooldown_hours: int = 6
     account_stale_hours: int = 36
     priority_accounts: str = ""
     priority_collection_cron: str = "*/30 * * * *"
+    auto_sync_stale_minutes: int = 180
     # OCR Provider 配置
     ocr_provider: str = "mock"  # mock | disabled | rapid | openai_compatible
     ocr_api_key: str = ""

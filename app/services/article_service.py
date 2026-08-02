@@ -143,6 +143,20 @@ class ArticleService:
                         continue
                     raise
 
+        def _failure_result(payload: dict, exc: Exception) -> dict:
+            article_id = str(payload.get("id") or payload.get("article_id") or "")
+            return {
+                "article_id": article_id,
+                "event_id": "",
+                "image_count": 0,
+                "status": "failed",
+                "article_created": False,
+                "article_skipped": False,
+                "ingest_failed": True,
+                "ingestion_status": "failed",
+                "error": str(exc)[:500],
+            }
+
         total = len(candidates)
         if total <= 4:
             results = []
@@ -151,6 +165,7 @@ class ArticleService:
                     results.append(self.ingest_we_mp_rss_payload(p))
                 except Exception as e:
                     logger.error("Failed to ingest article: %s", e)
+                    results.append(_failure_result(p, e))
                 if on_progress:
                     on_progress(i + 1, total)
             return results
@@ -165,6 +180,7 @@ class ArticleService:
                     results.append(future.result())
                 except Exception as e:
                     logger.error("Failed to ingest article: %s", e)
+                    results.append(_failure_result(futures[future], e))
                 completed += 1
                 if on_progress:
                     on_progress(completed, total)
@@ -309,6 +325,8 @@ class ArticleService:
         article.pic_url = data.get("pic_url", "")
         article.raw_payload = json.dumps(raw_payload, ensure_ascii=False)
         article.raw_markdown = data["markdown"]
+        article.ingestion_status = "ingested"
+        article.ingestion_reason = ""
         article.updated_at = now
         article.markdown_path = str(
             self._write_article_file(
@@ -318,6 +336,31 @@ class ArticleService:
         self.db.flush()
         return article
 
+    def _record_filtered_article(
+        self, data: dict[str, str], raw_payload: dict, reason: str
+    ) -> Article:
+        """Persist a lightweight gate decision so filtered articles are not reprocessed."""
+        article = (
+            self.db.query(Article)
+            .filter(Article.article_id == data["article_id"])
+            .one_or_none()
+        )
+        now = utcnow()
+        if article is None:
+            article = Article(article_id=data["article_id"])
+            self.db.add(article)
+        article.title = data["title"]
+        article.mp_name = data["mp_name"]
+        article.publish_time = data["publish_time"]
+        article.url = data["url"]
+        article.pic_url = data.get("pic_url", "")
+        article.raw_payload = json.dumps(raw_payload, ensure_ascii=False)
+        article.ingestion_status = "filtered"
+        article.ingestion_reason = reason[:255]
+        article.updated_at = now
+        self.db.commit()
+        return article
+
     def _ingest_normalized_payload(
         self, data: dict[str, str], raw_payload: dict
     ) -> dict:
@@ -325,12 +368,20 @@ class ArticleService:
             data["title"], data["markdown"], data["publish_time"]
         )
         if gate.should_skip:
+            self._record_filtered_article(
+                data,
+                raw_payload,
+                f"{gate.retention_decision}:{gate.article_type_reason or gate.article_type}",
+            )
             return {
                 "article_id": data["article_id"],
                 "event_id": "",
                 "image_count": 0,
                 "status": gate.retention_decision,
                 "article_created": False,
+                "article_skipped": True,
+                "ingest_failed": False,
+                "ingestion_status": "filtered",
             }
         article = self._upsert_article(data, raw_payload)
         image_count = self._process_images(article)
@@ -357,6 +408,9 @@ class ArticleService:
             "image_count": image_count,
             "status": event.status,
             "article_created": True,
+            "article_skipped": False,
+            "ingest_failed": False,
+            "ingestion_status": "ingested",
         }
 
     def _dedup_event(self, event: Event) -> Event:

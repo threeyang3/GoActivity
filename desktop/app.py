@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from desktop.service_controller import ServiceController, ServiceState, check_health
 from desktop.single_instance import SingleInstance
+from desktop.autostart import AutostartManager
 
 # Constants
 SERVICE_HOST = "127.0.0.1"
@@ -119,9 +120,11 @@ class StatusWorker(QThread):
 class StatusWindow(QMainWindow):
     """Control center window."""
 
-    def __init__(self, controller: ServiceController):
+    def __init__(self, controller: ServiceController, autostart: AutostartManager):
         super().__init__()
         self.controller = controller
+        self.autostart = autostart
+        self.autostart_changed_callback = None
         self.setWindowTitle("GoActivity 控制中心")
         self.setMinimumSize(500, 400)
         self.resize(600, 500)
@@ -272,8 +275,41 @@ class StatusWindow(QMainWindow):
         info_group.setLayout(info_layout)
         layout.addWidget(info_group)
 
+        startup_group = QGroupBox("启动设置")
+        startup_layout = QVBoxLayout()
+        self.autostart_checkbox = QCheckBox("登录 Windows 后自动启动 GoActivity")
+        self.autostart_checkbox.setToolTip("自动启动桌面管理器，并由管理器启动 GoActivity 和 WeRSS 服务")
+        self.autostart_checkbox.setChecked(self.autostart.is_enabled())
+        self.autostart_checkbox.toggled.connect(self._set_autostart)
+        startup_layout.addWidget(self.autostart_checkbox)
+        startup_note = QLabel("启用后，桌面管理器会在后台启动，并自动运行 GoActivity 与 WeRSS。")
+        startup_note.setWordWrap(True)
+        startup_note.setStyleSheet("color: #666;")
+        startup_layout.addWidget(startup_note)
+        startup_group.setLayout(startup_layout)
+        layout.addWidget(startup_group)
+
         layout.addStretch()
         return widget
+
+    def _set_autostart(self, enabled: bool):
+        try:
+            self.autostart.set_enabled(enabled)
+        except OSError as exc:
+            self.autostart_checkbox.blockSignals(True)
+            self.autostart_checkbox.setChecked(self.autostart.is_enabled())
+            self.autostart_checkbox.blockSignals(False)
+            QMessageBox.critical(self, "开机自启设置失败", str(exc))
+            return
+
+        if self.autostart_changed_callback:
+            self.autostart_changed_callback(enabled, source="window")
+
+    def sync_autostart_state(self, enabled: bool):
+        """Update the checkbox without writing the registry again."""
+        self.autostart_checkbox.blockSignals(True)
+        self.autostart_checkbox.setChecked(enabled)
+        self.autostart_checkbox.blockSignals(False)
 
     def _create_logs_tab(self) -> QWidget:
         widget = QWidget()
@@ -330,7 +366,9 @@ class GoActivityTray:
             self.app.setWindowIcon(QIcon(str(ASSET_ICON)))
 
         self.controller = ServiceController()
-        self.status_window = StatusWindow(self.controller)
+        self.autostart = AutostartManager()
+        self.status_window = StatusWindow(self.controller, self.autostart)
+        self.status_window.autostart_changed_callback = self._on_autostart_changed
 
         # Health check worker
         self.health_worker = StatusWorker(self.controller)
@@ -398,6 +436,15 @@ class GoActivityTray:
 
         menu.addSeparator()
 
+        # Windows login auto-start
+        self.action_autostart = QAction("开机自动启动", menu)
+        self.action_autostart.setCheckable(True)
+        self.action_autostart.setChecked(self.autostart.is_enabled())
+        self.action_autostart.toggled.connect(self._set_autostart_from_tray)
+        menu.addAction(self.action_autostart)
+
+        menu.addSeparator()
+
         # Logs
         action_logs = QAction("日志", menu)
         action_logs.triggered.connect(lambda: os.startfile("logs"))
@@ -411,6 +458,27 @@ class GoActivityTray:
         menu.addAction(action_quit)
 
         self.tray.setContextMenu(menu)
+
+    def _set_autostart_from_tray(self, enabled: bool):
+        try:
+            self.autostart.set_enabled(enabled)
+        except OSError as exc:
+            self.action_autostart.blockSignals(True)
+            self.action_autostart.setChecked(self.autostart.is_enabled())
+            self.action_autostart.blockSignals(False)
+            QMessageBox.critical(None, "开机自启设置失败", str(exc))
+            return
+        self._on_autostart_changed(enabled, source="tray")
+        state = "已启用" if enabled else "已关闭"
+        self.tray.showMessage("GoActivity", f"开机自启{state}")
+
+    def _on_autostart_changed(self, enabled: bool, *, source: str):
+        if source != "tray":
+            self.action_autostart.blockSignals(True)
+            self.action_autostart.setChecked(enabled)
+            self.action_autostart.blockSignals(False)
+        if source != "window":
+            self.status_window.sync_autostart_state(enabled)
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:

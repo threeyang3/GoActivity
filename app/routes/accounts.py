@@ -6,9 +6,7 @@
 import logging
 
 import requests as http_requests
-from fastapi import APIRouter, HTTPException, Query
-
-from fastapi import Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth import require_admin
 from app.config import get_settings
@@ -20,6 +18,10 @@ logger = logging.getLogger(__name__)
 def _rss_base() -> str:
     s = get_settings()
     return f"{s.we_mp_rss_base_url}{s.we_mp_rss_api_base}/mps"
+
+
+def _rss_admin_url() -> str:
+    return f"{get_settings().we_mp_rss_base_url.rstrip('/')}/#/wechat-status"
 
 
 def _auth_headers() -> dict[str, str]:
@@ -48,7 +50,7 @@ def _proxy_error(e: Exception) -> HTTPException:
 
 @router.get("")
 def list_accounts(
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     kw: str = Query(""),
     status: int | None = Query(None),
@@ -67,6 +69,51 @@ def list_accounts(
         return resp.json()
     except Exception as e:
         raise _proxy_error(e)
+
+
+@router.get("/authorization")
+def get_authorization_status():
+    """Return a safe summary of the collector's WeChat authorization state."""
+    settings = get_settings()
+    url = f"{settings.we_mp_rss_base_url}{settings.we_mp_rss_api_base}/sys/info"
+    result = {
+        "service_reachable": False,
+        "authorization_status": "unknown",
+        "authorized": False,
+        "account_name": "",
+        "avatar": "",
+        "expiry_time": "",
+        "admin_url": _rss_admin_url(),
+        "error": "",
+    }
+    try:
+        resp = http_requests.get(url, headers=_auth_headers(), timeout=15)
+        resp.raise_for_status()
+        payload = resp.json()
+        data = payload.get("data", payload) if isinstance(payload, dict) else {}
+        wx = data.get("wx", {}) if isinstance(data, dict) else {}
+        info = wx.get("info") or {}
+        ext_data = info.get("ext_data") or {}
+        authorized = bool(wx.get("login"))
+        result.update(
+            {
+                "service_reachable": True,
+                "authorization_status": "authorized" if authorized else "expired",
+                "authorized": authorized,
+                "account_name": str(
+                    ext_data.get("wx_app_name") or info.get("account_name") or ""
+                ),
+                "avatar": str(ext_data.get("wx_logo") or info.get("avatar") or ""),
+                "expiry_time": str(
+                    wx.get("expiry_time")
+                    or (info.get("expiry") or {}).get("expiry_time")
+                    or ""
+                ),
+            }
+        )
+    except Exception as exc:
+        result["error"] = str(_proxy_error(exc).detail)[:200]
+    return result
 
 
 @router.get("/search/{kw}")

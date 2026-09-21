@@ -368,3 +368,61 @@ class TestAuthHeaders:
                 assert captured_headers["h"]["Authorization"] == "AK-SK my-ak:my-sk"
         finally:
             _restore(settings, orig_ak, orig_sk)
+
+
+class TestAuthorizationStatus:
+    def test_authorization_status_returns_safe_summary(self, monkeypatch):
+        settings, orig_ak, orig_sk = _with_creds()
+        upstream = {
+            "data": {
+                "wx": {
+                    "login": True,
+                    "token": "must-not-leak",
+                    "expiry_time": "2026-09-22 10:00:00",
+                    "info": {
+                        "token": "also-must-not-leak",
+                        "ext_data": {
+                            "wx_app_name": "测试采集账号",
+                            "wx_logo": "https://example.com/logo.png",
+                        },
+                    },
+                }
+            }
+        }
+        monkeypatch.setattr(
+            "app.routes.accounts.http_requests.get",
+            lambda *_args, **_kwargs: FakeResponse(200, upstream),
+        )
+        try:
+            with TestClient(app) as client:
+                response = client.get("/accounts/authorization")
+            assert response.status_code == 200
+            body = response.json()
+            assert body["service_reachable"] is True
+            assert body["authorization_status"] == "authorized"
+            assert body["account_name"] == "测试采集账号"
+            assert "token" not in body
+            assert "must-not-leak" not in response.text
+        finally:
+            _restore(settings, orig_ak, orig_sk)
+
+    def test_authorization_status_explains_unreachable_collector(self, monkeypatch):
+        import requests as _requests
+
+        settings, orig_ak, orig_sk = _with_creds()
+
+        def raise_offline(*_args, **_kwargs):
+            raise _requests.ConnectionError("offline")
+
+        monkeypatch.setattr("app.routes.accounts.http_requests.get", raise_offline)
+        try:
+            with TestClient(app) as client:
+                response = client.get("/accounts/authorization")
+            body = response.json()
+            assert response.status_code == 200
+            assert body["service_reachable"] is False
+            assert body["authorization_status"] == "unknown"
+            assert "offline" in body["error"]
+            assert body["admin_url"].endswith("/#/wechat-status")
+        finally:
+            _restore(settings, orig_ak, orig_sk)

@@ -61,6 +61,7 @@ const API = {
     const qs = new URLSearchParams(params).toString();
     return this.get(`/accounts${qs ? '?' + qs : ''}`);
   },
+  accountAuthorization() { return this.get('/accounts/authorization'); },
   addAccount(body) { return this.post('/accounts', body); },
   deleteAccount(id) { return this.del(`/accounts/${id}`); },
   updateAccount(id) { return this.post(`/accounts/update/${id}`); },

@@ -109,7 +109,7 @@ curl -X POST http://localhost:8000/setup/feishu-views
 
 ```json
 {
-  "total": 11,
+  "total": 13,
   "created": 0,
   "skipped": 10,
   "failed": 0

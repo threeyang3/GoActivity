@@ -4,8 +4,10 @@
 $ErrorActionPreference = "Stop"
 
 # 配置
-$WE_MP_RSS_DIR = "E:\cctry\GoActivity\we-mp-rss"
-$PYTHON_EXE = "D:\miniconda3\envs\we-mp-rss\python.exe"
+$WE_MP_RSS_DIR = Join-Path (Split-Path $PSScriptRoot -Parent) "we-mp-rss"
+$PYTHON_EXE = $env:WEMP_RSS_PYTHON
+if (-not $PYTHON_EXE) { $PYTHON_EXE = Join-Path $WE_MP_RSS_DIR ".venv\Scripts\python.exe" }
+if (-not (Test-Path -LiteralPath $PYTHON_EXE)) { $PYTHON_EXE = "D:\miniconda3\envs\we-mp-rss\python.exe" }
 $PID_FILE = "$WE_MP_RSS_DIR\.pid"
 
 Write-Host "========================================" -ForegroundColor Cyan
@@ -15,10 +17,10 @@ Write-Host ""
 
 # 检查是否已在运行
 if (Test-Path $PID_FILE) {
-    $pid = Get-Content $PID_FILE
-    $process = Get-Process -Id $pid -ErrorAction SilentlyContinue
+    $servicePid = Get-Content $PID_FILE
+    $process = Get-Process -Id $servicePid -ErrorAction SilentlyContinue
     if ($process) {
-        Write-Host "[INFO] we-mp-rss 已在运行 (PID: $pid)" -ForegroundColor Yellow
+        Write-Host "[INFO] we-mp-rss 已在运行 (PID: $servicePid)" -ForegroundColor Yellow
         Write-Host "[INFO] 如需重启，请先运行 stop-we-mp-rss.ps1" -ForegroundColor Yellow
         exit 0
     }

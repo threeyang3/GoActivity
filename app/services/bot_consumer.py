@@ -13,6 +13,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.db import SessionLocal
+from app.exceptions import ProviderError
 from app.services.bot_handler import BotHandler
 from app.services.feishu_messenger import FeishuMessenger
 from app.utils.lark_cli import build_lark_cli_command, run_cli_command
@@ -55,15 +56,29 @@ class BotEventConsumer:
         """停止事件消费。"""
         self._stop_event.set()
         if self._process:
-            try:
-                self._process.terminate()
-                self._process.wait(timeout=5)
-            except Exception:
-                self._process.kill()
+            self._stop_process(self._process)
         if self._thread:
             self._thread.join(timeout=10)
         self._running = False
         logger.info("Feishu bot consumer stopped")
+
+    @staticmethod
+    def _stop_process(process: subprocess.Popen) -> None:
+        """Stop CLI descendants as well as the Node launcher."""
+        if process.poll() is not None:
+            return
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW, timeout=10,
+                )
+            else:
+                process.terminate()
+            process.wait(timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            process.kill()
 
     def reload_settings(self) -> None:
         """重新加载配置。必要时重启消费者。"""
@@ -108,14 +123,13 @@ class BotEventConsumer:
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         self._running = True
-        self._restart_count = 0  # 成功启动，重置计数
 
         try:
             for line in self._process.stdout:  # type: ignore[union-attr]
@@ -127,9 +141,10 @@ class BotEventConsumer:
                 self._handle_line(line)
         finally:
             if self._process:
-                self._process.terminate()
-                self._process.wait(timeout=5)
+                self._stop_process(self._process)
             self._running = False
+        if not self._stop_event.is_set():
+            raise ProviderError("Feishu event consumer exited unexpectedly")
 
     def _handle_line(self, line: str) -> None:
         """处理一行 NDJSON 输出。"""
@@ -138,6 +153,11 @@ class BotEventConsumer:
         except json.JSONDecodeError:
             logger.debug("Non-JSON line from bot consumer: %s", line[:100])
             return
+
+        if not isinstance(event, dict):
+            return
+        if event.get("message_id"):
+            self._restart_count = 0  # Receiving a message confirms the consumer is usable.
 
         # lark-cli event consume 输出的事件数据在顶层（不在 event 嵌套中）
         chat_type = event.get("chat_type", "")

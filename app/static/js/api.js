@@ -61,6 +61,7 @@ const API = {
     const qs = new URLSearchParams(params).toString();
     return this.get(`/accounts${qs ? '?' + qs : ''}`);
   },
+  accountAuthorization() { return this.get('/accounts/authorization'); },
   addAccount(body) { return this.post('/accounts', body); },
   deleteAccount(id) { return this.del(`/accounts/${id}`); },
   updateAccount(id) { return this.post(`/accounts/update/${id}`); },
@@ -82,6 +83,11 @@ const API = {
   autoSyncStatus() { return this.get('/sync/status'); },
   triggerAutoSync() { return this.post('/sync/auto'); },
   botStatus() { return this.get('/bot/status'); },
+  automationStatus() { return this.get('/automation/status'); },
+  automationAccountsHealth() { return this.get('/automation/accounts-health'); },
+  feishuReconcile() { return this.get('/automation/feishu-reconcile'); },
+  repairFeishuReconcile() { return this.post('/automation/feishu-reconcile'); },
+  collectPriorityAccounts() { return this.post('/automation/collect-priority'); },
 
   // Settings
   settingsSchema() { return this.get('/settings/schema'); },

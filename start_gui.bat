@@ -8,9 +8,13 @@ echo ========================================
 echo.
 
 set "SCRIPT_DIR=%~dp0"
+cd /d "%SCRIPT_DIR%"
+set "PYTHON_EXE=%GOACTIVITY_PYTHON%"
+if not defined PYTHON_EXE if exist "%SCRIPT_DIR%.venv\Scripts\python.exe" set "PYTHON_EXE=%SCRIPT_DIR%.venv\Scripts\python.exe"
+if not defined PYTHON_EXE set "PYTHON_EXE=D:\miniconda3\envs\goactivity\python.exe"
 
 :: 检查 Python 环境
-python --version >nul 2>&1
+"%PYTHON_EXE%" --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [错误] 未找到 Python
     pause
@@ -18,22 +22,19 @@ if %errorlevel% neq 0 (
 )
 
 :: 检查依赖
-python -c "import pystray; from PIL import Image" >nul 2>&1
+"%PYTHON_EXE%" -c "import PySide6" >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [提示] 正在安装 GUI 依赖...
-    pip install pystray pillow
-    if %errorlevel% neq 0 (
-        echo [错误] 安装依赖失败
-        pause
-        exit /b 1
-    )
+    echo [错误] GoActivity 环境缺少 PySide6，请安装 requirements-desktop.txt
+    pause
+    exit /b 1
 )
 
 :: 启动 GUI 管理器
 echo 正在启动 GUI 管理器...
 echo 启动后会在系统托盘显示图标
 echo.
-start /b pythonw gui_manager.py
+set "PYTHONW_EXE=%PYTHON_EXE:python.exe=pythonw.exe%"
+start "" /b "%PYTHONW_EXE%" -m desktop.app
 
 echo [✓] GUI 管理器已启动
 echo.

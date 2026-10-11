@@ -37,18 +37,28 @@ AUTOSTART_REG_NAME = "GoActivity"
 AUTOSTART_REG_NAME_RSS = "WeMpRss"
 
 
+def _find_service_python(env_var, project_dir, conda_env):
+    """查找服务专用解释器，避免继承托盘程序的不兼容 Python 版本。"""
+    configured = os.environ.get(env_var)
+    if configured and Path(configured).is_file():
+        return configured
+    candidates = [
+        *(project_dir / sub / "Scripts" / "python.exe" for sub in (".venv", "venv")),
+        Path(rf"D:\miniconda3\envs\{conda_env}\python.exe"),
+        Path.home() / "miniconda3" / "envs" / conda_env / "python.exe",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return sys.executable
+
+
+def _find_goactivity_python():
+    return _find_service_python("GOACTIVITY_PYTHON", Path(__file__).parent, "goactivity")
+
+
 def _find_rss_python():
-    """查找 we-mp-rss 的 Python 解释器"""
-    # 优先查找 conda 环境
-    conda_python = Path(r"D:\miniconda3\envs\we-mp-rss\python.exe")
-    if conda_python.exists():
-        return str(conda_python)
-    # 其次查找本地 venv
-    for sub in (".venv", "venv"):
-        p = RSS_DIR / sub / "Scripts" / "python.exe"
-        if p.exists():
-            return str(p)
-    return sys.executable  # fallback: 共用当前环境
+    return _find_service_python("WEMP_RSS_PYTHON", RSS_DIR, "we-mp-rss")
 
 
 def _lighten(hex_color, factor=0.2):
@@ -80,6 +90,7 @@ class GoActivityTray:
         self._rss_restart_count = 0  # WeRSS 连续重启计数
 
         self.rss_python = _find_rss_python()
+        self.goactivity_python = _find_goactivity_python()
         self.icon = None
         self._status_window = None  # 状态窗口（独立 Toplevel）
         self._user_stopped = False  # 用户主动停止标志
@@ -212,7 +223,7 @@ class GoActivityTray:
             return
 
         cmd = [
-            sys.executable,
+            self.goactivity_python,
             'start_service.py',
             '--start',
             '--host', '0.0.0.0',
@@ -356,6 +367,8 @@ class GoActivityTray:
             return
 
         cmd = [self.rss_python, 'main.py', '-job', 'True', '-init', 'True']
+        child_env = os.environ.copy()
+        child_env.setdefault("WE_RSS.AUTH", "True")
 
         try:
             self.rss_process = subprocess.Popen(
@@ -364,6 +377,7 @@ class GoActivityTray:
                 stdout=self._rss_log,
                 stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
+                env=child_env,
             )
             self.rss_running = True
             self._rss_user_stopped = False

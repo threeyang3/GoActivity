@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 import base64
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -274,21 +275,29 @@ class RapidOCRProvider(OCRProvider):
     缺点：对复杂排版的识别质量可能不如 Vision API。
     """
 
-    def __init__(self) -> None:
-        try:
-            from rapidocr_onnxruntime import RapidOCR
-            self._ocr = RapidOCR()
-        except ImportError:
-            raise ProviderSelectionError("rapidocr_onnxruntime is not installed. Run: pip install rapidocr_onnxruntime")
+    _engine = None
+    _engine_lock = threading.Lock()
 
     def extract(self, image_paths: list[str]) -> str:
         if not image_paths:
             return ""
 
+        # One lazily loaded model, shared by ingestion workers. RapidOCR keeps
+        # mutable inference state, so serialize calls instead of duplicating models.
+        with self._engine_lock:
+            if self.__class__._engine is None:
+                try:
+                    from rapidocr_onnxruntime import RapidOCR
+                except ImportError as exc:
+                    raise ProviderSelectionError("rapidocr_onnxruntime is not installed. Run: pip install rapidocr_onnxruntime") from exc
+                self.__class__._engine = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1)
+            return self._extract_locked(image_paths)
+
+    def _extract_locked(self, image_paths: list[str]) -> str:
         extracted_parts: list[str] = []
         for path in image_paths[:5]:
             try:
-                result, _ = self._ocr(path)
+                result, _ = self.__class__._engine(path)
                 if result:
                     texts = [line[1] for line in result if line[1].strip()]
                     if texts:

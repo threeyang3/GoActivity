@@ -22,6 +22,8 @@ class Article(Base):
     processed_markdown: Mapped[str] = mapped_column(Text, default="")
     markdown_path: Mapped[str] = mapped_column(Text, default="")
     processed_markdown_path: Mapped[str] = mapped_column(Text, default="")
+    ingestion_status: Mapped[str] = mapped_column(String(32), default="ingested", index=True)
+    ingestion_reason: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -88,6 +90,9 @@ class Event(Base):
     status: Mapped[str] = mapped_column(String(64), default="pending", index=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     feishu_record_id: Mapped[str] = mapped_column(String(255), default="", index=True)
+    feishu_retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    feishu_next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    feishu_last_error: Mapped[str] = mapped_column(Text, default="")
     dedup_key: Mapped[str] = mapped_column(String(255), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

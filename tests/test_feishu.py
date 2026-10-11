@@ -300,6 +300,8 @@ def test_lark_cli_recreates_missing_record_on_upsert(monkeypatch) -> None:
 
     client = LarkCLIClient(db)
     settings = client.settings
+    monkeypatch.setattr(settings, "feishu_bitable_app_token", "test-base")
+    monkeypatch.setattr(settings, "feishu_bitable_table_id", "test-table")
     original_values = (
         settings.feishu_provider,
         settings.feishu_dry_run,
@@ -381,6 +383,8 @@ def test_lark_cli_recreates_missing_record_on_attachment_upload(monkeypatch) -> 
 
     client = LarkCLIClient(db)
     settings = client.settings
+    monkeypatch.setattr(settings, "feishu_bitable_app_token", "test-base")
+    monkeypatch.setattr(settings, "feishu_bitable_table_id", "test-table")
     original_values = (
         settings.feishu_provider,
         settings.feishu_dry_run,

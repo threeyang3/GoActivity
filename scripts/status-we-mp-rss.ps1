@@ -4,7 +4,7 @@
 $ErrorActionPreference = "SilentlyContinue"
 
 # Config
-$WE_MP_RSS_DIR = "E:\cctry\GoActivity\we-mp-rss"
+$WE_MP_RSS_DIR = Join-Path (Split-Path $PSScriptRoot -Parent) "we-mp-rss"
 $PID_FILE = "$WE_MP_RSS_DIR\.pid"
 
 Write-Host "========================================" -ForegroundColor Cyan
@@ -18,11 +18,11 @@ if (-not (Test-Path $PID_FILE)) {
     exit 0
 }
 
-$pid = Get-Content $PID_FILE
-$process = Get-Process -Id $pid -ErrorAction SilentlyContinue
+$servicePid = Get-Content $PID_FILE
+$process = Get-Process -Id $servicePid -ErrorAction SilentlyContinue
 
 if (-not $process) {
-    Write-Host "[Status] Not running (process $pid not found)" -ForegroundColor Yellow
+    Write-Host "[Status] Not running (process $servicePid not found)" -ForegroundColor Yellow
     Remove-Item $PID_FILE -Force
     exit 0
 }
@@ -33,7 +33,7 @@ $cpu = $process.CPU
 $startTime = $process.StartTime
 
 Write-Host "[Status] Running" -ForegroundColor Green
-Write-Host "[PID] $pid" -ForegroundColor White
+Write-Host "[PID] $servicePid" -ForegroundColor White
 Write-Host "[Memory] $memory MB" -ForegroundColor White
 Write-Host "[Start Time] $startTime" -ForegroundColor White
 Write-Host ""

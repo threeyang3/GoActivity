@@ -1,0 +1,4156 @@
+diff --git a/apis/auth.py b/apis/auth.py
+index 88140d5a1143caf6508162d51c915cdb6c8d5816..0dfc6a4c44df8e1edbf3510010213c518b1eb15a 100644
+--- a/apis/auth.py
++++ b/apis/auth.py
+@@ -31,7 +31,7 @@ from driver.wx import WX_API
+ def ApiSuccess(data):
+     if data != None:
+             print("\n登录结果:")
+-            print(f"Token: {data['token']}")
++            print("微信授权已获取")
+             set_config("token",data['token'])
+             cfg.reload()
+     else:
+@@ -447,4 +447,4 @@ async def switch_wechat_account(current_user: dict = Depends(get_current_user)):
+         raise HTTPException(
+             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+             detail=error_response(code=50001, message=f"切换账号失败: {str(e)}")
+-        )
+\ No newline at end of file
++        )
+diff --git a/apis/mps.py b/apis/mps.py
+index 2040f71a15fbd466ce3e84e54106d246e97523dc..b18ed4e9e4af8999fbf0a600340d12bff16a3058 100644
+--- a/apis/mps.py
++++ b/apis/mps.py
+@@ -372,8 +372,20 @@ async def update_mps(
+             wx=WxGather().Model()
+             wx.get_Articles(mp.faker_id,Mps_id=mp.id,Mps_title=mp.mp_name,CallBack=UpdateArticle,start_page=start_page,MaxPage=end_page)
+             result=wx.articles
+-        import threading
+-        threading.Thread(target=UpArt,args=(mp,)).start()
++        from core.collection_guard import collection_guard
++        from core.queue import TaskQueue
++        guarded = cfg.get("gather.model", "web") == "web"
++        allowed, reason = collection_guard.enqueue(mp.id) if guarded else (True, "")
++        if not allowed:
++            return error_response(code=42901, message=reason)
++        try:
++            if not TaskQueue.add_task(UpArt, mp, task_name=mp.mp_name):
++                if guarded:
++                    collection_guard.finish(mp.id)
++                return error_response(code=42901, message="该公众号已在采集队列中")
++        except Exception:
++            collection_guard.finish(mp.id)
++            raise
+         return success_response({
+             "time_span":time_span,
+             "list":result,
+diff --git a/apis/task_queue.py b/apis/task_queue.py
+index 42d1eb603b40667283282b063f7aea0736c6507a..38a9aa4c0574fca564e86d92455a4bfd073423ab 100644
+--- a/apis/task_queue.py
++++ b/apis/task_queue.py
+@@ -11,6 +11,13 @@ import asyncio
+ 
+ router = APIRouter(prefix="/task-queue", tags=["任务队列"])
+ 
++@router.get("/collection/status", summary="采集冷却与去重状态")
++async def collection_status(current_user: dict = Depends(get_current_user_or_ak)):
++    from core.collection_guard import collection_guard
++    result = collection_guard.status()
++    result["queue_pending"] = TaskQueue.get_queue_info()["pending_tasks"]
++    return success_response(data=result)
++
+ @router.get("/status", summary="获取任务队列状态")
+ async def get_queue_status(
+     current_user: dict = Depends(get_current_user_or_ak)
+diff --git a/apis/tools.py b/apis/tools.py
+index cbaf39e33f3605146a0b9119e8c9ed3fea1c7aeb..d5aa226b4402f33029b027bf08fa8ca43b226b62 100644
+--- a/apis/tools.py
++++ b/apis/tools.py
+@@ -16,10 +16,8 @@ import uuid
+ import base64
+ 
+ # 导入导出工具
+-from tools.mdtools.export import export_md_to_doc, process_articles
+ 
+ # 图片处理
+-from PIL import Image
+ 
+ router = APIRouter(prefix="/tools", tags=["工具"])
+ 
+@@ -71,6 +69,7 @@ def _export_articles_worker(
+     """
+     导出文章的工作线程函数
+     """
++    from tools.mdtools.export import export_md_to_doc
+     return export_md_to_doc(
+         mp_id=mp_id,
+         doc_id=doc_id,
+@@ -419,6 +418,7 @@ def process_image_crop(
+         (cropped_image_bytes, original_size, new_size)
+     """
+     # 打开图片
++    from PIL import Image
+     img = Image.open(io.BytesIO(image_data))
+     original_width, original_height = img.size
+     
+@@ -682,6 +682,7 @@ async def proxy_remote_image(
+             # 不裁剪，直接返回原图
+             cropped_data = image_data
+             try:
++                from PIL import Image
+                 img = Image.open(io.BytesIO(image_data))
+                 original_size = img.size
+                 new_size = img.size
+@@ -728,4 +729,4 @@ async def proxy_remote_image(
+     except ValueError as e:
+         return error_response(400, str(e))
+     except Exception as e:
+-        return error_response(500, f"图片处理失败: {str(e)}")
+\ No newline at end of file
++        return error_response(500, f"图片处理失败: {str(e)}")
+diff --git a/core/auth.py b/core/auth.py
+index 2ede948f6ac1233f6c1ee59ee97d3ea2042a73e9..6a95cbb976421803e2cdb6958e51f3cda7926b8f 100644
+--- a/core/auth.py
++++ b/core/auth.py
+@@ -677,8 +677,6 @@ def authenticate_cascade_node(api_key: str, secret_key: str) -> Optional[dict]:
+         session = DB.get_session()
+         secret_hash = hashlib.sha256(secret_key.encode()).hexdigest()
+         
+-        print_info(f"[级联认证] AK: {api_key}")
+-        print_info(f"[级联认证] SK Hash: {secret_hash}")
+         
+         node = session.query(CascadeNode).filter(
+             CascadeNode.api_key == api_key,
+diff --git a/core/collection_guard.py b/core/collection_guard.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2a1fa132ab5b91f272de19b64fa99f1195ebe93b
+--- /dev/null
++++ b/core/collection_guard.py
+@@ -0,0 +1,111 @@
++"""Shared deduplication and persistent WeChat rate-limit cooldown."""
++import json
++import os
++import threading
++import time
++from functools import wraps
++from pathlib import Path
++
++
++class CollectionGuard:
++    def __init__(self, path=None, clock=time.time, min_interval=300):
++        self.path = Path(path) if path else Path(__file__).resolve().parents[1] / "data" / "collection-state.json"
++        self.clock = clock
++        self.min_interval = min_interval
++        self.lock = threading.Lock()
++        self.pending = {}
++        self.active = set()
++        try:
++            self.state = json.loads(self.path.read_text(encoding="utf-8"))
++        except (OSError, ValueError):
++            self.state = {}
++        if not isinstance(self.state, dict):
++            self.state = {}
++
++    def _save(self):
++        self.path.parent.mkdir(parents=True, exist_ok=True)
++        temporary = self.path.with_suffix(".tmp")
++        temporary.write_text(json.dumps(self.state), encoding="utf-8")
++        os.replace(temporary, self.path)
++
++    def _reason(self, mp_id):
++        if self.state.get("cooldown_until", 0) > self.clock():
++            return "微信接口限频，采集已进入冷却期"
++        if mp_id in self.active:
++            return "该公众号正在采集"
++        attempts = self.state.get("attempts", {})
++        if mp_id in attempts and self.clock() - attempts[mp_id] < self.min_interval:
++            return "该公众号近期已尝试采集，请稍后再试"
++        return ""
++
++    def enqueue(self, mp_id):
++        with self.lock:
++            self.pending = {key: expires for key, expires in self.pending.items() if expires > self.clock()}
++            reason = self._reason(mp_id)
++            if mp_id in self.pending:
++                reason = reason or "该公众号已在采集队列中"
++            if reason:
++                return False, reason
++            self.pending[mp_id] = self.clock() + 1800
++            return True, ""
++
++    def begin(self, mp_id):
++        with self.lock:
++            self.pending.pop(mp_id, None)
++            reason = self._reason(mp_id)
++            if reason:
++                return False, reason
++            self.active.add(mp_id)
++            attempts = self.state.setdefault("attempts", {})
++            attempts[mp_id] = self.clock()
++            self.state["attempts"] = {key: value for key, value in attempts.items() if self.clock() - value < 86400}
++            try:
++                self._save()
++            except OSError:
++                self.active.discard(mp_id)
++                attempts.pop(mp_id, None)
++                self.state["attempts"].pop(mp_id, None)
++                raise
++            return True, ""
++
++    def finish(self, mp_id):
++        with self.lock:
++            self.active.discard(mp_id)
++            self.pending.pop(mp_id, None)
++
++    def rate_limited(self):
++        with self.lock:
++            strikes = min(self.state.get("strikes", 0) + 1, 3)
++            self.state.update(strikes=strikes, cooldown_until=self.clock() + 1800 * 2 ** (strikes - 1))
++            self._save()
++
++    def success(self):
++        with self.lock:
++            self.state["strikes"] = 0
++            self._save()
++
++    def status(self):
++        with self.lock:
++            remaining = max(0, int(self.state.get("cooldown_until", 0) - self.clock()))
++            return {"cooldown": remaining > 0, "remaining_seconds": remaining,
++                    "retry_at": self.state.get("cooldown_until", 0),
++                    "pending_count": len(self.pending), "active_count": len(self.active)}
++
++
++collection_guard = CollectionGuard()
++
++
++def guarded_collection(function):
++    @wraps(function)
++    def wrapped(self, faker_id="", Mps_id="", *args, **kwargs):
++        key = Mps_id or faker_id
++        allowed, reason = collection_guard.begin(key)
++        self.collection_error = ""
++        if not allowed:
++            self.collection_error = reason
++            return None
++        try:
++            return function(self, faker_id, Mps_id, *args, **kwargs)
++        finally:
++            collection_guard.finish(key)
++    return wrapped
+diff --git a/core/db.py b/core/db.py
+index f60689bb19f984d54e74d86737ee2feede06ee06..3354ec59cd6b4d8234d464d178f8f5aec4819b8e 100644
+--- a/core/db.py
++++ b/core/db.py
+@@ -60,9 +60,8 @@ class Db:
+             # 添加SQL执行事件监听器，打印执行的SQL语句
+             @event.listens_for(self.engine, "before_cursor_execute")
+             def receive_before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+-                print_info(f"[SQL] {statement}")
+-                if parameters:
+-                    print_info(f"[参数] {parameters}")
++                if cfg.get("logging.sql", False):
++                    print_info(f"[SQL] {statement}")
+             
+             # 为 SQLite 设置 text_factory 处理无效 UTF-8 字符
+             if con_str.startswith('sqlite:///'):
+diff --git a/core/wx/model/web.py b/core/wx/model/web.py
+index b2b6b9801e563c7a6fe88473cb8c00c179982710..4db159e32d2ad6850021ddbede241147bf34f8f8 100644
+--- a/core/wx/model/web.py
++++ b/core/wx/model/web.py
+@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
+ from core.wx.base import WxGather
+ from core.print import print_error
+ from core.log import logger
++from core.collection_guard import collection_guard, guarded_collection
+ # 继承 BaseGather 类
+ class MpsWeb(WxGather):
+ 
+@@ -24,6 +25,7 @@ class MpsWeb(WxGather):
+             logger.error(e)
+         return ""
+     # 重写 get_Articles 方法
++    @guarded_collection
+     def get_Articles(self, faker_id:str='',Mps_id:str='',Mps_title="",CallBack=None,start_page:int=0,MaxPage:int=1,interval=10,Gather_Content=False,Item_Over_CallBack=None,Over_CallBack=None):
+         super().Start(mp_id=Mps_id)
+         if self.Gather_Content:
+@@ -63,6 +65,8 @@ class MpsWeb(WxGather):
+                 self._cookies =resp.cookies
+                 # 流量控制了, 退出
+                 if msg['base_resp']['ret'] == 200013:
++                    collection_guard.rate_limited()
++                    self.collection_error = "微信接口限频（200013），已暂停采集并进入冷却期"
+                     super().Error("frequencey control, stop at {}".format(str(begin)))
+                     break
+                 
+@@ -82,6 +86,7 @@ class MpsWeb(WxGather):
+                     super().Error("错误原因:{}:代码:{}".format(msg['base_resp']['err_msg'],msg['base_resp']['ret']),code=msg['base_resp']['err_msg'])
+                     break    
+                 # 如果返回的内容中为空则结束
++                collection_guard.success()
+                 if 'publish_page' not in msg:
+                     super().Error("all ariticle parsed")
+                     break
+@@ -136,4 +141,4 @@ class MpsWeb(WxGather):
+             else:
+                 print(f"未找到feed {feed_id}")
+         except Exception as e:
+-            logger.error(f"设置feed状态失败: {e}")
+\ No newline at end of file
++            logger.error(f"设置feed状态失败: {e}")
+diff --git a/driver/auth.py b/driver/auth.py
+index 58a340f7d0c1b4b6a6b94bf7d8957b8428f26841..7ea955f4388c41d4978904bb16b5ef9aa0a66ae0 100644
+--- a/driver/auth.py
++++ b/driver/auth.py
+@@ -1,36 +1,210 @@
+ import threading
+ import asyncio
+-from core.print import print_warning
++import time
++from core.print import print_warning, print_info, print_success, print_error
+ from driver.base import WX_InterFace
+ import os
+-import portalocker
+ from core.task import TaskScheduler
+ from driver.success import Success
+ 
++# ===== Cookie 自动续期 =====
++# 连续续期失败计数器，达到阈值后通知用户重新扫码
++_consecutive_failures = 0
++_MAX_FAILURES_BEFORE_NOTIFY = 3
++
++
++async def renew_auth() -> bool:
++    """
++    Cookie 自动续期：用存储的 cookie 重新访问微信公众平台，
++    如果会话仍有效，服务器会返回新的 cookie（有效期延长）。
++    无需扫码，无需切换账号。
++
++    Returns:
++        True 表示续期成功，False 表示 cookie 已过期需重新扫码
++    """
++    from driver.playwright_driver import PlaywrightController
++    from driver.store import Store
++    from driver.cookies import expire
++    from driver.token import set_token
++    from driver.success import setStatus
++
++    WX_HOME = "https://mp.weixin.qq.com/cgi-bin/home"
++    controller = None
++
++    try:
++        # 1. 加载存储的 cookie
++        cookies = Store.load()
++        if not cookies:
++            print_warning("[续期] 未找到存储的 cookie，需要重新扫码登录")
++            return False
++
++        # 2. 启动无头浏览器
++        controller = PlaywrightController(headless=True)
++        await controller.start_browser()
++
++        # 3. 注入 cookie
++        for c in cookies:
++            if 'domain' not in c:
++                c['domain'] = 'mp.weixin.qq.com'
++            if 'path' not in c:
++                c['path'] = '/'
++        await controller.add_cookies(cookies)
++
++        # 4. 访问微信公众平台首页
++        print_info("[续期] 正在访问微信公众平台...")
++        success = await controller.open_url(
++            f"{WX_HOME}?t=home/index&lang=zh_CN",
++            wait_until="networkidle",
++            timeout=15000
++        )
++        if not success:
++            print_warning("[续期] 页面加载失败")
++            return False
++
++        page = controller.page
++        current_url = page.url
++
++        # 5. 检查是否跳转到了登录页（说明 cookie 已过期）
++        if "mp.weixin.qq.com" not in current_url or "/cgi-bin/home" not in current_url:
++            # 再检查一下是否有登录相关的元素
++            login_hint = page.locator("text=使用账号登录")
++            if await login_hint.count() > 0:
++                print_warning("[续期] Cookie 已过期，需要重新扫码登录")
++                return False
++
++        # 6. 续期成功 — 提取新的 token 和 cookie
++        # 提取 token（从 URL 参数中）
++        token = ""
++        import re
++        token_match = re.search(r'token=([^&]+)', current_url)
++        if token_match:
++            token = token_match.group(1)
++
++        # 提取 ext_data（公众号名称等，可选）
++        ext_data = None
++        try:
++            selectors = {
++                "wx_app_name": [".weui-desktop_name", ".acount_box-nickname"],
++                "wx_logo": [".weui-desktop-account__img", ".weui-desktop-account__thumb"],
++            }
++            ext_data = {}
++            for key, selector_list in selectors.items():
++                for selector in selector_list:
++                    try:
++                        element = page.locator(selector)
++                        if await element.count() > 0:
++                            await element.wait_for(state="visible", timeout=2000)
++                            if key == "wx_logo":
++                                ext_data[key] = await element.get_attribute("src")
++                            else:
++                                ext_data[key] = await element.text_content()
++                            break
++                    except Exception:
++                        continue
++        except Exception:
++            ext_data = None
++
++        # 获取最新 cookie
++        new_cookies = await controller.get_cookies()
++
++        # 构建并保存 token 数据
++        from driver.wx import Wx
++        wx = Wx()
++        session_data = wx.format_token(new_cookies, token)
++
++        if session_data and session_data.get("token"):
++            set_token(session_data, ext_data)
++            setStatus(True)
++            expiry_time = session_data.get("expiry", {}).get("expiry_time", "未知")
++            remaining = session_data.get("expiry", {}).get("remaining_seconds", "未知")
++            print_success(f"[续期] Cookie 续期成功！有效期至: {expiry_time} (剩余 {remaining}s)")
++            return True
++        else:
++            print_warning("[续期] 未能提取有效的 token")
++            return False
++
++    except Exception as e:
++        print_error(f"[续期] 续期过程出错: {e}")
++        return False
++    finally:
++        if controller:
++            try:
++                await controller.close()
++            except Exception:
++                pass
++
++
+ def auth():
+-    def run_auth():
+-        wx = WX_InterFace()
+-        # 在新的事件循环中运行异步方法
++    """
++    Cookie 自动续期入口（同步版本，供定时任务调用）
++    连续失败 N 次后发送通知提醒用户重新扫码
++    """
++    global _consecutive_failures
++
++    def run_renew():
+         loop = asyncio.new_event_loop()
+         asyncio.set_event_loop(loop)
+         try:
+-            loop.run_until_complete(wx.switch_account())
++            return loop.run_until_complete(renew_auth())
+         finally:
+             loop.close()
+ 
+-    thread = threading.Thread(target=run_auth)
++    thread = threading.Thread(target=run_renew)
+     thread.start()
+-    thread.join()  # 可选：等待完成
+-def start_auth_service():    
+-    # from driver.wx_api import login_with_token
+-    # login_with_token()
+-    if str(os.getenv('WE_RSS.AUTH',False))=="True":
+-        print_warning("启动授权定时任务")
+-        auth_task=TaskScheduler()
++    thread.join(timeout=120)  # 最多等待 2 分钟
++
++    # 检查线程是否超时
++    if thread.is_alive():
++        print_warning("[续期] 续期超时，将在下次重试")
++        _consecutive_failures += 1
++    else:
++        # 通过检查登录状态判断是否成功
++        from driver.success import getStatus
++        if getStatus():
++            _consecutive_failures = 0
++        else:
++            _consecutive_failures += 1
++
++    # 连续失败达到阈值，通知用户
++    if _consecutive_failures >= _MAX_FAILURES_BEFORE_NOTIFY:
++        _send_renewal_failure_notice()
++        _consecutive_failures = 0  # 重置，避免重复通知
++
++
++def _send_renewal_failure_notice():
++    """发送续期失败通知，提醒用户重新扫码"""
++    try:
++        from jobs.notice import sys_notice
++        from core.config import cfg
++        text = (
++            f"- 服务名：{cfg.get('server.name', '')}\n"
++            f"- 发送时间：{time.strftime('%Y-%m-%d %H:%M:%S')}\n"
++            f"- 原因：Cookie 自动续期连续失败 {_MAX_FAILURES_BEFORE_NOTIFY} 次，"
++            f"微信会话已过期\n"
++            f"- 请手动访问系统重新扫码登录"
++        )
++        title = str(cfg.get("server.code_title", "WeRss Cookie 已过期"))
++        sys_notice(text=text, title=title)
++        print_warning(f"[续期] 已发送续期失败通知: {title}")
++    except Exception as e:
++        print_error(f"[续期] 发送通知失败: {e}")
++
++
++def start_auth_service():
++    """启动 Cookie 自动续期定时任务"""
++    if str(os.getenv('WE_RSS.AUTH', False)) == "True":
++        print_warning("启动 Cookie 自动续期定时任务")
++        auth_task = TaskScheduler()
+         auth_task.clear_all_jobs()
+-        print("是否开启调试模式:",str(os.getenv('DEBUG',False)))
+-        if str(os.getenv('DEBUG',False))=="True":
+-            auth_task.add_cron_job(auth, "*/10 * * * *",tag="授权定时更新")
++        is_debug = str(os.getenv('DEBUG', False)) == "True"
++        print("是否开启调试模式:", is_debug)
++        if is_debug:
++            # 调试模式：每 30 分钟续期一次
++            auth_task.add_cron_job(auth, "*/30 * * * *", tag="Cookie自动续期")
+         else:
+-            auth_task.add_cron_job(auth, "0 0 */1 * *",tag="授权定时更新")
+-        auth_task.start()
+\ No newline at end of file
++            # 生产模式：每 6 小时续期一次（在 cookie 过期前刷新）
++            auth_task.add_cron_job(auth, "0 */6 * * *", tag="Cookie自动续期")
++        auth_task.start()
++        print_success("[续期] 定时任务已启动，每 6 小时自动续期 Cookie")
++    else:
++        print_info("[续期] 未启用自动续期（设置 WE_RSS.AUTH=True 以启用）")
+\ No newline at end of file
+diff --git a/driver/playwright_driver.py b/driver/playwright_driver.py
+index 680f45fa0402e726aa84d2d62d3930f5ca8d55e2..f0a17defa1fb78cfd4cb37323cde9291aea76971 100644
+--- a/driver/playwright_driver.py
++++ b/driver/playwright_driver.py
+@@ -50,11 +50,12 @@ class PlaywrightController:
+     """
+ 
+     def __init__(self, headless: bool = None,
+-                 browser_type: str = "webkit",
++                 browser_type: str = None,
+                  proxy_url: Optional[str] = "",
+                  user_agent: Optional[str] = None,
+                  debug: bool = False,
+-                 mobile_mode: bool = False):
++                 mobile_mode: bool = False,
++                 native_context: bool = False):
+         """
+         初始化异步控制器
+ 
+@@ -66,32 +67,57 @@ class PlaywrightController:
+             debug: 调试模式
+             mobile_mode: 是否为移动端模式
+         """
+-        # 默认使用 headless=True（适合Docker环境），可通过环境变量覆盖
+-        self.headless = os.environ.get("HEADLESS", "true").lower() == "true" if headless is None else headless
+-        self.browser_type = browser_type
++        # Windows 本地扫码登录时，无头模式下微信二维码经常不可见，因此默认关闭。
++        default_headless = "false" if sys.platform == "win32" else "true"
++        self.headless = os.environ.get("HEADLESS", default_headless).lower() == "true" if headless is None else headless
++        if browser_type is None:
++            self.browser_type = "chromium" if sys.platform == "win32" else "webkit"
++        else:
++            self.browser_type = browser_type
+         self.proxy_url = proxy_url
+         self.debug = debug
+         self.mobile_mode = mobile_mode
++        self.native_context = native_context
+ 
+         # 反爬虫配置实例
+         self.anti_crawler_config = AntiCrawlerConfig()
+ 
+-        # User-Agent处理：
+-        # - 如果用户指定了user_agent，优先使用用户指定的
+-        # - 否则从AntiCrawlerConfig获取
+-        if user_agent:
+-            self.user_agent = user_agent
+-        else:
+-            self.user_agent = self.anti_crawler_config._ua_generator.get_realistic_user_agent(mobile_mode)
+-
+         # Playwright 对象
+         self._playwright = None
+         self._browser = None
+         self._context = None
+         self._page = None
++        self.browser_channel = self._detect_browser_channel()
++        # 禁用原生 Edge 配置文件：会导致 Windows 驱动器枚举，弹出 "B: 系统找不到指定的驱动器" 错误
++        self.use_native_edge_profile = False
++
++        # User-Agent处理：
++        # Windows + Edge 登录微信公众平台时，尽量使用浏览器原生指纹，避免页面白屏。
++        if user_agent:
++            self.user_agent = user_agent
++        elif self.use_native_edge_profile or self.native_context:
++            self.user_agent = None
++        else:
++            self.user_agent = self.anti_crawler_config._ua_generator.get_realistic_user_agent(mobile_mode)
+ 
+         # 性能指标
+         self.metrics = Metrics()
++
++    def _detect_browser_channel(self) -> Optional[str]:
++        """在 Windows 上优先复用系统已安装的 Edge，避免额外下载 Playwright 浏览器。
++
++        注意：不要设置 use_native_edge_profile=True，因为 Edge 原生配置文件
++        可能包含对 B: 盘等不存在驱动器的引用，导致 Windows 弹出"系统找不到指定的驱动器"错误。
++        """
++        if sys.platform != "win32":
++            return None
++        edge_paths = [
++            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
++            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
++        ]
++        if any(os.path.exists(path) for path in edge_paths):
++            return "msedge"
++        return None
+         
+     async def start_browser(self) -> None:
+         """
+@@ -138,6 +164,8 @@ class PlaywrightController:
+                     "--disable-dev-shm-usage",
+                     "--no-sandbox",
+                 ]
++                if self.browser_channel:
++                    launch_options["channel"] = self.browser_channel
+ 
+             # 添加代理
+             if self.proxy_url:
+@@ -151,20 +179,22 @@ class PlaywrightController:
+ 
+             # 构建上下文配置
+             context_options = {
+-                "user_agent": self.user_agent,  # 使用初始化时确定的UA
+                 "viewport": anti_config.get("viewport", {"width": 1920, "height": 1080}),
+                 "locale": "zh-CN",
+                 "timezone_id": "Asia/Shanghai",
+             }
++            if self.user_agent:
++                context_options["user_agent"] = self.user_agent
+ 
+-            # 应用额外的HTTP头
+-            if "extra_http_headers" in anti_config:
+-                context_options["extra_http_headers"] = anti_config["extra_http_headers"]
++            if not self.use_native_edge_profile and not self.native_context:
++                # 应用额外的HTTP头
++                if "extra_http_headers" in anti_config:
++                    context_options["extra_http_headers"] = anti_config["extra_http_headers"]
+ 
+-            # 应用其他可选配置
+-            for key in ["java_script_enabled", "ignore_https_errors", "bypass_csp"]:
+-                if key in anti_config:
+-                    context_options[key] = anti_config[key]
++                # 应用其他可选配置
++                for key in ["java_script_enabled", "ignore_https_errors", "bypass_csp"]:
++                    if key in anti_config:
++                        context_options[key] = anti_config[key]
+ 
+             self._context = await self._browser.new_context(**context_options)
+ 
+@@ -172,7 +202,8 @@ class PlaywrightController:
+             self._page = await self._context.new_page()
+ 
+             # ========== 核心改造：注入反检测脚本 ==========
+-            await self._apply_anti_crawler_scripts(self._page)
++            if not self.use_native_edge_profile and not self.native_context:
++                await self._apply_anti_crawler_scripts(self._page)
+ 
+             # 记录启动时间
+             self.metrics.browser_startup_time = time.time() - start_time
+diff --git a/driver/qrcode.py b/driver/qrcode.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..20680b8b9ffcc114f089f3ba0d8e5e5c984ab266
+--- /dev/null
++++ b/driver/qrcode.py
+@@ -0,0 +1,8 @@
++"""Validation for screenshots of the WeChat login QR element."""
++from PIL import Image, ImageStat
++
++
++def validate_qrcode_image(path):
++    with Image.open(path) as image:
++        if min(image.size) < 80 or ImageStat.Stat(image.convert("L")).stddev[0] < 15:
++            raise ValueError("二维码图片为空白或尺寸异常，请重新获取")
+diff --git a/driver/success.py b/driver/success.py
+index d5b47d796738915bc3b2861fb1dde820c14e65a9..dd76f2ae59b762e7a0cf2e2e3d05b96b710c6c3e 100644
+--- a/driver/success.py
++++ b/driver/success.py
+@@ -32,7 +32,11 @@ def setStatus(status:bool):
+         WX_LOGIN_ED = status
+ 
+ def getStatus():
+-    """获取登录状态，优先从Redis读取，失败则使用全局变量，并检查token是否过期"""
++    """获取登录状态，优先从Redis读取，失败则使用全局变量，并检查token是否过期。
++
++    关键：remaining_seconds 是登录时的静态快照，必须用 expiry_timestamp
++    与当前时间比较才能正确判断是否过期。
++    """
+     global WX_LOGIN_ED
+     import time
+ 
+@@ -43,31 +47,36 @@ def getStatus():
+             if val is not None and val == "1":
+                 # 检查token是否过期
+                 token_data = getLoginInfo()
+-                if token_data and 'expiry' in token_data and token_data['expiry']:
++                if not token_data or not token_data.get('token'):
++                    # token数据不存在，状态无效
++                    print_warning("Token数据不存在，需要重新登录")
++                    setStatus(False)
++                    return False
++
++                if 'expiry' in token_data and token_data['expiry']:
+                     expiry = token_data['expiry']
+-                    # 检查剩余秒数
+-                    if 'remaining_seconds' in expiry:
+-                        remaining = expiry['remaining_seconds']
+-                        if remaining is not None and remaining > 0:
++                    # 优先用 expiry_timestamp 与当前时间比较（动态判断）
++                    if 'expiry_timestamp' in expiry:
++                        expiry_timestamp = expiry['expiry_timestamp']
++                        if expiry_timestamp and expiry_timestamp >= time.time():
+                             return True
+                         else:
+-                            # token已过期，更新状态
+                             print_warning("Token已过期，需要重新登录")
+                             setStatus(False)
+                             return False
+-                    # 检查过期时间戳
+-                    elif 'expiry_timestamp' in expiry:
+-                        expiry_timestamp = expiry['expiry_timestamp']
+-                        # 过期时间戳 >= 当前时间，说明还没过期
+-                        if expiry_timestamp and expiry_timestamp >= time.time():
++                    # 回退：用 remaining_seconds（注意这是静态值，仅在无 timestamp 时使用）
++                    elif 'remaining_seconds' in expiry:
++                        remaining = expiry['remaining_seconds']
++                        if remaining is not None and remaining > 0:
+                             return True
+                         else:
+-                            # token已过期，更新状态
+                             print_warning("Token已过期，需要重新登录")
+                             setStatus(False)
+                             return False
+-                # 没有过期信息，但状态为True，暂时返回True
+-                return True
++                # 没有过期信息，视为无效状态
++                print_warning("Token缺少过期信息，需要重新登录")
++                setStatus(False)
++                return False
+         except Exception as e:
+             print_warning(f"检查登录状态失败: {e}")
+             pass
+@@ -125,17 +134,17 @@ def CanGetToken():
+     # 检查过期信息
+     expiry = token_data.get('expiry')
+     if expiry:
+-        # 检查剩余秒数
+-        if 'remaining_seconds' in expiry:
+-            remaining = expiry['remaining_seconds']
+-            if remaining is not None and remaining <= 0:
++        # 优先用 expiry_timestamp 动态判断
++        if 'expiry_timestamp' in expiry:
++            expiry_timestamp = expiry['expiry_timestamp']
++            if expiry_timestamp and expiry_timestamp <= time.time():
+                 print_warning("Token已过期，请重新扫码登录")
+                 setStatus(False)
+                 return False
+-        # 检查过期时间戳
+-        elif 'expiry_timestamp' in expiry:
+-            expiry_timestamp = expiry['expiry_timestamp']
+-            if expiry_timestamp and expiry_timestamp <= time.time():
++        # 回退：用 remaining_seconds（静态值）
++        elif 'remaining_seconds' in expiry:
++            remaining = expiry['remaining_seconds']
++            if remaining is not None and remaining <= 0:
+                 print_warning("Token已过期，请重新扫码登录")
+                 setStatus(False)
+                 return False
+diff --git a/driver/token.py b/driver/token.py
+index c423d2feaa140ddb137b99725b872d0f11663eec..5fd74e188fd5d9e710143773ce9a29a685bee3d6 100644
+--- a/driver/token.py
++++ b/driver/token.py
+@@ -44,7 +44,7 @@ def set_token(data:any,ext_data:any=None):
+     else:
+         _save_to_local(token_data)
+ 
+-    print_success(f"Token:{data.get('token')} \n到期时间:{data.get('expiry')['expiry_time']}\n")
++    print_success(f"微信授权已保存，到期时间:{(data.get('expiry') or {}).get('expiry_time', '未知')}\n")
+     from jobs.notice import sys_notice
+ 
+ #     sys_notice(f"""WeRss授权成功
+@@ -61,14 +61,26 @@ def _save_to_local(token_data: dict):
+ 
+ 
+ def get(key:str,default:str="")->str:
+-    """从整体token_data中获取指定字段"""
++    """从整体token_data中获取指定字段，支持嵌套键（如 'expiry.expiry_time'）"""
+     token_data = _get_token_data()
+     if token_data is None:
+         return default
+-    value = token_data.get(key, default)
++
++    # 支持嵌套键访问（用 . 分隔）
++    keys = key.split('.')
++    value = token_data
++    for k in keys:
++        if isinstance(value, dict):
++            value = value.get(k, None)
++        else:
++            value = None
++            break
++
++    if value is None:
++        return default
+     if isinstance(value, dict):
+         return json.dumps(value)
+-    if value=="None":
++    if value == "None":
+         return ''
+     return str(value) if value is not None else default
+ 
+@@ -84,4 +96,4 @@ def _get_token_data() -> dict | None:
+         except Exception as e:
+             print_warning(f"Redis读取失败，回退到本地文件: {e}")
+     # 回退到本地文件
+-    return wx_cfg.get("token_data", None)
+\ No newline at end of file
++    return wx_cfg.get("token_data", None)
+diff --git a/driver/wx.py b/driver/wx.py
+index 37f5e636a410eba4c71d2f2f3324eaedda79c275..3f5447d51849e3564aee993e87cef67edc914c9b 100644
+--- a/driver/wx.py
++++ b/driver/wx.py
+@@ -6,7 +6,6 @@ from sqlalchemy import False_
+ 
+ import driver
+ from .playwright_driver import PlaywrightController
+-from PIL import Image
+ from driver.success import Success
+ import time
+ import os
+@@ -17,6 +16,7 @@ from threading import Timer, Lock
+ from .cookies import expire
+ import json
+ import psutil
++from io import BytesIO
+ from core.print import print_error,print_warning,print_info,print_success
+ class Wx:
+     _haslogin=False
+@@ -25,25 +25,30 @@ class Wx:
+     isLOCK=False
+     WX_LOGIN="https://mp.weixin.qq.com/"
+     WX_HOME="https://mp.weixin.qq.com/cgi-bin/home"
+-    wx_login_url="static/wx_qrcode.png"
+-    lock_file_path="data/lock.lock"
++    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++    wx_login_path = os.path.join(project_root, "static", "wx_qrcode.png")
++    wx_login_url="/static/wx_qrcode.png"
++    lock_file_path=os.path.join(project_root, "data", "lock.lock")
+     CallBack=None
+     Notice=None
+     ext_data = None
+     # 添加线程锁保护共享变量
+     _login_lock = Lock()
+     def __init__(self):
++        self.qr_error = ""
++        self.qr_generating = False
+         self.lock_path=os.path.dirname(self.lock_file_path)
+         self.refresh_interval=3660*24
+         self.controller=PlaywrightController()
+         if not os.path.exists(self.lock_path):
+             os.makedirs(self.lock_path)
++        os.makedirs(os.path.dirname(self.wx_login_path), exist_ok=True)
+         self.Clean()
+         self.release_lock()
+         pass
+ 
+     def GetHasCode(self):
+-        if os.path.exists(self.wx_login_url):
++        if os.path.exists(self.wx_login_path):
+             return True
+         return False
+     async def extract_token_from_requests(self):
+@@ -278,19 +283,24 @@ class Wx:
+ 
+         self.Clean()
+         print("子线程执行中")
++        self.qr_error = ""
++        self.qr_generating = True
++        import asyncio
++        try:
++            loop = asyncio.get_running_loop()
++            loop.create_task(self.wxLogin(CallBack, True))
++        except RuntimeError:
++            def run_wxLogin():
++                loop = asyncio.new_event_loop()
++                asyncio.set_event_loop(loop)
++                try:
++                    loop.run_until_complete(self.wxLogin(CallBack, True))
++                finally:
++                    loop.close()
+ 
+-        def run_wxLogin():
+-            import asyncio
+-            loop = asyncio.new_event_loop()
+-            asyncio.set_event_loop(loop)
+-            try:
+-                loop.run_until_complete(self.wxLogin(CallBack, True))
+-            finally:
+-                loop.close()
+-
+-        from core.thread import ThreadManager
+-        self.thread = ThreadManager(target=run_wxLogin)
+-        self.thread.start()  # 启动线程
++            from core.thread import ThreadManager
++            self.thread = ThreadManager(target=run_wxLogin)
++            self.thread.start()  # 启动线程
+         from core.ver import VERSION
+         print(f"微信公众平台登录 v{VERSION}")
+         return WX_API.QRcode()
+@@ -298,7 +308,7 @@ class Wx:
+     wait_time=1
+     def QRcode(self):
+         return {
+-            "code":f"/{self.wx_login_url}?t={(time.time())}",
++            "code":f"{self.wx_login_url}?t={(time.time())}",
+             "is_exists":self.GetHasCode(),
+         }
+     async def refresh_task(self):
+@@ -312,7 +322,9 @@ class Wx:
+         except Exception as e:
+             raise Exception(f"浏览器关闭")  # 重新抛出异常以便外部捕获处理
+     def QrStatus(self):
+-        return {"login_status":self.HasLogin(),"qr_code":self.GetHasCode()}
++        return {"login_status":self.HasLogin(),"qr_code":self.GetHasCode(),
++                "generating":self.qr_generating,"error":self.qr_error,
++                "code":self.QRcode()["code"]}
+ 
+     def HasLogin(self):
+         with self._login_lock:
+@@ -429,13 +441,38 @@ class Wx:
+                     pass
+     def isLock(self):             
+         if self.isLock:
+-            if os.path.exists(self.wx_login_url):
++            if os.path.exists(self.wx_login_path):
+                 try:
+-                    size=os.path.getsize(self.wx_login_url)
++                    size=os.path.getsize(self.wx_login_path)
+                     return size>364
+                 except Exception as e:
+                     print(f"二维码图片获取失败: {str(e)}")
+         return self.isLock
++
++    async def _save_qrcode_image(self, page, qrcode):
++        """优先截取二维码元素；失败时回退为整页截图后裁剪二维码区域。"""
++        try:
++            await qrcode.screenshot(path=self.wx_login_path)
++            return
++        except Exception as exc:
++            print_warning(f"二维码元素截图失败，尝试整页裁剪: {str(exc)}")
++
++        box = await qrcode.bounding_box()
++        if not box:
++            raise Exception("未获取到二维码区域，无法生成二维码图片")
++
++        screenshot_bytes = await page.screenshot(full_page=True)
++        from PIL import Image
++        image = Image.open(BytesIO(screenshot_bytes))
++        pad = 12
++        left = max(int(box["x"]) - pad, 0)
++        top = max(int(box["y"]) - pad, 0)
++        right = min(int(box["x"] + box["width"]) + pad, image.width)
++        bottom = min(int(box["y"] + box["height"]) + pad, image.height)
++        if right <= left or bottom <= top:
++            raise Exception("二维码区域尺寸无效，无法裁剪")
++        image.crop((left, top, right, bottom)).save(self.wx_login_path)
++
+     async def wxLogin(self, CallBack=None, NeedExit=True):
+         """
+         微信公众平台登录流程（异步）：
+@@ -464,46 +501,94 @@ class Wx:
+             # 清理现有资源
+             self.cleanup_resources()
+ 
+-            self.controller = PlaywrightController()
++            # 登录页使用浏览器原生 UA/请求头，避免采集用指纹与脚本干扰登录脚本。
++            self.controller = PlaywrightController(headless=True, native_context=True)
+             # 初始化浏览器控制器
+             driver = self.controller
+             # 启动浏览器并打开微信公众平台
+             print_info("正在启动浏览器...")
+             await driver.start_browser()
+-            await driver.open_url(self.WX_LOGIN)
++            if not await driver.open_url(self.WX_LOGIN):
++                raise Exception("微信登录页面加载失败，请检查网络后重试")
+             page = driver.page
+ 
+             # 等待页面完全加载
+             print_info("正在加载登录页面...")
+-            await page.wait_for_load_state("networkidle")
++            await page.wait_for_load_state("domcontentloaded", timeout=15000)
+ 
+-            # 定位二维码区域
+-            qr_tag = ".login__type__container__scan__qrcode"
+-            # 获取二维码图片URL
+-            qrcode = await page.query_selector(qr_tag)
+-            code_src = await qrcode.get_attribute("src")
+-            print("正在生成二维码图片...")
+-            print(f"code_src:{code_src}")
++            # 定位二维码区域 - 尝试多个选择器（微信页面结构可能变化）
++            qr_selectors = [
++                ".login__type__container__scan__qrcode",  # 旧版选择器
++                ".login__type__container__scan__qrcode img",  # 旧版 img 子元素
++                "img.login__type__container__scan__qrcode__img",  # 登录二维码专用 class
++                "canvas.qrcode",  # canvas 二维码
++            ]
+ 
+-            # 使用Playwright截图功能（添加异常处理）
+-            await qrcode.screenshot(path=self.wx_login_url)
++            selector = ", ".join(qr_selectors)
++            try:
++                await page.wait_for_selector(selector, state="visible", timeout=25000)
++                await page.wait_for_function("""() => Array.from(document.querySelectorAll(
++                    'img.login__type__container__scan__qrcode, .login__type__container__scan__qrcode img, img.login__type__container__scan__qrcode__img, canvas.qrcode'
++                )).some(el => el instanceof HTMLImageElement
++                    ? el.complete && el.naturalWidth >= 80
++                    : el.width >= 80 && el.height >= 80)""", timeout=25000)
++            except Exception as exc:
++                raise Exception("微信登录页未加载出有效二维码，请检查网络并重试") from exc
++            qrcode = await page.query_selector(selector)
++            await self._save_qrcode_image(page, qrcode)
+ 
+             print("二维码已保存为 wx_qrcode.png，请扫码登录...")
+-            self.HasCode = True
+-            if os.path.getsize(self.wx_login_url) <= 364:
++            if os.path.getsize(self.wx_login_path) <= 364:
+                 raise Exception("二维码图片获取失败，请重新扫码")
++            from driver.qrcode import validate_qrcode_image
++            validate_qrcode_image(self.wx_login_path)
++            self.HasCode = True
++            self.qr_generating = False
+             # 等待登录成功（检测二维码图片加载完成）
+             print("等待扫码登录...")
+             if self.Notice is not None:
+                 self.Notice()
+ 
+-            # 监听页面导航事件
++            # 多种方式检测登录成功
++            login_detected = False
++            timeout = 5 * 60  # 5 分钟超时
++            start_time = time.time()
++
++            # 方式1: 监听页面导航事件
++            navigation_happened = asyncio.Event()
++
+             def handle_frame_navigated(frame):
++                nonlocal login_detected
+                 current_url = frame.url
++                print("检测到页面导航")
+                 if self.WX_HOME in current_url:
+-                    print(f"登录成功，正在获取cookie和token...")
++                    login_detected = True
++                    navigation_happened.set()
++
+             page.on('framenavigated', handle_frame_navigated)
+-            await page.wait_for_event("framenavigated", timeout=5*60 * 1000)
++
++            # 方式2: 轮询检查页面 URL（更可靠）
++            print("开始轮询检查登录状态...")
++            while not login_detected and (time.time() - start_time) < timeout:
++                try:
++                    current_url = page.url
++                    if self.WX_HOME in current_url:
++                        print("轮询检测到登录成功")
++                        login_detected = True
++                        break
++                    # 检查是否在首页（URL 可能不包含完整 WX_HOME）
++                    if "mp.weixin.qq.com" in current_url and "/cgi-bin/home" in current_url:
++                        print("轮询检测到登录成功（首页）")
++                        login_detected = True
++                        break
++                except Exception as e:
++                    print(f"检查页面URL时出错: {e}")
++                    # 页面可能已关闭
++                    break
++                await asyncio.sleep(1)  # 每秒检查一次
++
++            if not login_detected:
++                raise Exception("扫码登录超时，请重新扫码")
+ 
+             from .success import setStatus
+             with self._login_lock:
+@@ -517,6 +602,8 @@ class Wx:
+ 
+             else:
+                 print_error(f"\n错误发生: {str(e)}")
++            self.qr_error = "扫码登录超时，请重新获取二维码" if "Timeout" in str(e) else str(e)
++            self.qr_generating = False
+             self.SESSION = None
+             return self.SESSION
+         finally:
+@@ -572,7 +659,7 @@ class Wx:
+             if self.SESSION and self.SESSION.get("token"):
+                 from driver.token import set_token
+                 set_token(self.SESSION, self.ext_data)
+-                print_success(f"已更新Token: {self.SESSION.get('token')}")
++                print_success("已更新微信会话")
+             print_success("登录成功！")
+         else:
+             print_warning("未登录！")
+@@ -674,7 +761,7 @@ class Wx:
+         return rel
+     def Clean(self):
+         try:
+-            os.remove(self.wx_login_url)
++            os.remove(self.wx_login_path)
+         except:
+             pass
+         finally:
+@@ -694,7 +781,7 @@ class Wx:
+             return False
+             
+     def check_lock(self, timeout: int = 300) -> bool:
+-        if not os.path.exists(self.wx_login_url):
++        if not os.path.exists(self.wx_login_path):
+             return False
+         return True
+     def set_lock(self):
+@@ -731,4 +818,4 @@ class Wx:
+ 
+ WX_API = Wx()
+ def GetCode(CallBack:any=None,NeedExit=True):
+-    WX_API.GetCode(CallBack,NeedExit=NeedExit)
+\ No newline at end of file
++    WX_API.GetCode(CallBack,NeedExit=NeedExit)
+diff --git a/driver/wx_api.py b/driver/wx_api.py
+index e90727d157d0be633b225a986a032f4fd0c809ff..c31af87f689ee0a243acf0a5d3fb5c83f597e299 100644
+--- a/driver/wx_api.py
++++ b/driver/wx_api.py
+@@ -15,7 +15,6 @@ from attr import s
+ import requests
+ from typing import Optional, Dict, Any, Callable
+ from threading import Lock, Timer
+-from PIL import Image
+ from io import BytesIO
+ 
+ 
+@@ -34,6 +33,7 @@ class WeChatAPI:
+     """微信公众平台API登录类"""
+     
+     def __init__(self):
++        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+         self.base_url = "https://mp.weixin.qq.com"
+         self.login_url = f"{self.base_url}/"
+         self.home_url = f"{self.base_url}/cgi-bin/home"
+@@ -45,8 +45,9 @@ class WeChatAPI:
+         self.token = None
+         self.cookies_dict=[]
+         self.cookies:Optional[Dict[str,str]] = {}
+-        self.qr_code_path = "static/wx_qrcode.png"
+-        self.wx_login_url=f"{self.qr_code_path}"
++        self.static_dir = os.path.join(project_root, "static")
++        self.qr_code_path = os.path.join(self.static_dir, "wx_qrcode.png")
++        self.wx_login_url = "/static/wx_qrcode.png"
+         self.lock_file_path="data/lock.lock"
+         # 线程安全
+         self._lock = Lock()
+@@ -56,7 +57,6 @@ class WeChatAPI:
+         self.notice_callback = None
+         
+         # 确保静态目录存在
+-        self.qr_code_path = os.path.abspath("static/wx_qrcode.png")
+         os.makedirs(os.path.dirname(self.qr_code_path), exist_ok=True)
+         
+         # 设置请求头
+@@ -110,7 +110,7 @@ class WeChatAPI:
+                     if  self.notice_callback is not None:
+                         self.notice_callback()
+                     return {
+-                        'code': f"{self.qr_code_path}?t={int(time.time())}",
++                        'code': f"{self.wx_login_url}?t={int(time.time())}",
+                         'is_exists': os.path.exists(self.qr_code_path),
+                         'uuid': qr_info['uuid'],
+                         'msg': '请使用微信扫描二维码登录'
+@@ -1039,4 +1039,4 @@ if __name__ == "__main__":
+         #     time.sleep(1)
+     except KeyboardInterrupt:
+         print("程序退出")
+-        logout()
+\ No newline at end of file
++        logout()
+diff --git a/driver/wxarticle.py b/driver/wxarticle.py
+index 09caf2aed76e5c4af6a597110e329858a4895e95..0bdcc979ce43100817daff305fe6e8bd90d1bd4d 100644
+--- a/driver/wxarticle.py
++++ b/driver/wxarticle.py
+@@ -77,8 +77,9 @@ class WXArticleFetcher:
+         }
+ 
+         try:
+-            # 使用异步上下文管理器
++            # 使用异步上下文管理器（headless=True 避免弹出浏览器窗口）
+             async with PlaywrightController(
++                headless=True,
+                 proxy_url=self.browser_proxy_url,
+                 mobile_mode=True
+             ) as controller:
+diff --git a/jobs/mps.py b/jobs/mps.py
+index 1653fba22a834795035c49a4b802410675c62ada..1f49ac4f0356840d2227d6d71cb7dbb8d7a98e1c 100644
+--- a/jobs/mps.py
++++ b/jobs/mps.py
+@@ -20,7 +20,7 @@ def fetch_all_article():
+         mps=db.DB.get_all_mps()
+         for item in mps:
+             try:
+-                wx.get_Articles(item.faker_id,CallBack=UpdateArticle,Mps_id=item.id,Mps_title=item.mp_name, MaxPage=1)
++                wx.get_Articles(item.faker_id,CallBack=UpdateArticle,Mps_id=item.id,Mps_title=item.mp_name, MaxPage=5)
+             except Exception as e:
+                 print(e)
+         print(wx.articles) 
+@@ -39,17 +39,20 @@ from .webhook import web_hook
+ interval=int(cfg.get("interval",60)) # 每隔多少秒执行一次
+ def do_job(mp=None,task:MessageTask=None,isTest=False):
+         """执行单个公众号的采集任务"""
+-        # TaskQueue.add_task(test,info=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+-        # print("执行任务", task.mps_id)
+-        print(f"执行任务 (测试模式: {isTest})")
+-        
++        from datetime import datetime
++        start_time = datetime.now()
++        mp_name = mp.mp_name if mp else "未知"
++        task_id = task.id if task else "未知"
++
++        print_info(f"开始采集 | 公众号: {mp_name} | 任务ID: {task_id} | 时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
++
+         # 初始化变量，确保在所有分支中都有定义
+         count = 0
+         all_count = 0
+         mock_articles = []
+         success = False
+         error_msg = None
+-        
++
+         try:
+             if isTest:
+                 # 测试模式使用模拟数据
+@@ -68,8 +71,9 @@ def do_job(mp=None,task:MessageTask=None,isTest=False):
+             else:
+                 wx=WxGather().Model()
+                 try:
+-                    wx.get_Articles(mp.faker_id,CallBack=UpdateArticle,Mps_id=mp.id,Mps_title=mp.mp_name, MaxPage=1,Over_CallBack=Update_Over,interval=interval)
+-                    success = True
++                    wx.get_Articles(mp.faker_id,CallBack=UpdateArticle,Mps_id=mp.id,Mps_title=mp.mp_name, MaxPage=5,Over_CallBack=Update_Over,interval=interval)
++                    error_msg = getattr(wx, "collection_error", "") or None
++                    success = not error_msg
+                 except Exception as e:
+                     print_error(f"获取文章失败 [{mp.mp_name}]: {e}")
+                     error_msg = str(e)
+@@ -84,8 +88,27 @@ def do_job(mp=None,task:MessageTask=None,isTest=False):
+                 from jobs.webhook import MessageWebHook
+                 tms=MessageWebHook(task=task,feed=mp,articles=mock_articles)
+                 web_hook(tms, is_test=isTest)
+-                print_success(f"任务({task.id})[{mp.mp_name}]执行成功,{count}成功条数")
+-                
++
++                # 计算耗时
++                end_time = datetime.now()
++                duration = (end_time - start_time).total_seconds()
++
++                if success and count > 0:
++                    print_success(
++                        f"采集完成 | 公众号: {mp_name} | "
++                        f"获取: {count} 篇文章 | 耗时: {duration:.1f}秒"
++                    )
++                elif success:
++                    print_info(
++                        f"采集完成 | 公众号: {mp_name} | "
++                        f"无新文章 | 耗时: {duration:.1f}秒"
++                    )
++                else:
++                    print_warning(
++                        f"采集异常 | 公众号: {mp_name} | "
++                        f"错误: {error_msg} | 耗时: {duration:.1f}秒"
++                    )
++
+                 # 采集成功，清除该公众号的环境异常记录
+                 if not isTest and success and count > 0:
+                     try:
+@@ -192,14 +215,32 @@ class MessageTaskTracker:
+         """任务完成"""
+         if task_id not in self._tasks:
+             return
+-        
++
+         task_info = self._tasks[task_id]
+-        print_success(f"\n{'='*50}")
+-        print_success(f"消息任务 [{task_id}] 执行完成!")
+-        print_success(f"总计: {task_info['total']} 个公众号")
+-        print_success(f"成功: {task_info['completed']} 个")
+-        print_error(f"失败: {task_info['failed']} 个")
+-        print_success(f"{'='*50}\n")
++        end_time = datetime.now()
++        start_time = datetime.fromisoformat(task_info['start_time'])
++        total_duration = (end_time - start_time).total_seconds()
++
++        print_info(f"{'='*60}")
++        print_success(
++            f"任务完成 | ID: {task_id} | "
++            f"总计: {task_info['total']} | "
++            f"成功: {task_info['completed']} | "
++            f"失败: {task_info['failed']} | "
++            f"耗时: {total_duration:.1f}秒"
++        )
++
++        # 输出每个公众号的详细结果
++        for result in task_info.get('mp_results', []):
++            status = "✓" if result['success'] else "✗"
++            articles = result.get('article_count', 0)
++            error = result.get('error', '')
++            if result['success']:
++                print_info(f"  {status} {result['mp_name']}: {articles} 篇文章")
++            else:
++                print_error(f"  {status} {result['mp_name']}: {error}")
++
++        print_info(f"{'='*60}")
+     
+     def get_task_status(self, task_id: str) -> dict:
+         """获取任务状态"""
+@@ -210,6 +251,10 @@ tracker = MessageTaskTracker()
+ import threading
+ 
+ def add_job(feeds:list[Feed]=None,task:MessageTask=None,isTest=False):
++    from datetime import datetime
++    task_start_time = datetime.now()
++    task_id = task.id if task else "未知"
++
+     if isTest:
+         TaskQueue.clear_queue()
+ 
+@@ -217,19 +262,32 @@ def add_job(feeds:list[Feed]=None,task:MessageTask=None,isTest=False):
+     if feeds is None and task is not None:
+         feeds = get_feeds(task)
+ 
++    if not isTest and cfg.get("gather.model", "web") == "web":
++        from core.collection_guard import collection_guard
++        feeds = [feed for feed in (feeds or []) if collection_guard.enqueue(feed.id)[0]]
++
++    if not feeds:
++        print_warning(f"任务 {task_id} 没有可采集的公众号")
++        return
++
++    print_info(f"任务开始 | ID: {task_id} | 公众号数量: {len(feeds)} | 时间: {task_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
++
+     # 初始化任务追踪
+     if task and not isTest and feeds:
+         tracker.start_task(task.id, len(feeds))
+ 
+     for feed in feeds:
+         # 使用公众号名称作为任务显示名称
+-        TaskQueue.add_task(do_job, feed, task, isTest, task_name=feed.mp_name)
++        if not TaskQueue.add_task(do_job, feed, task, isTest, task_name=feed.mp_name):
++            if not isTest and cfg.get("gather.model", "web") == "web":
++                collection_guard.finish(feed.id)
+         if isTest:
+-            print(f"测试任务，{feed.mp_name}，加入队列成功")
++            print_info(f"测试任务加入队列 | 公众号: {feed.mp_name}")
+             break
+-        print(f"{feed.mp_name}，加入队列成功")
+-    print_success(TaskQueue.get_queue_info())
+-    pass
++        print_info(f"加入队列 | 公众号: {feed.mp_name}")
++
++    queue_info = TaskQueue.get_queue_info()
++    print_info(f"队列状态 | {queue_info}")
+ import json
+ def get_feeds(task:MessageTask=None):
+      mps = json.loads(task.mps_id) if task.mps_id else []
+@@ -302,4 +360,4 @@ def start_article_stats_refresh():
+ if __name__ == '__main__':
+     # do_job()
+     # start_all_task()
+-    pass
+\ No newline at end of file
++    pass
+diff --git a/main.py b/main.py
+index bd151d82b22422be3f1fc66637527022eb718fab..9f55de33b1720071b086959668d1f1cc1bf87ac4 100644
+--- a/main.py
++++ b/main.py
+@@ -1,6 +1,19 @@
+ import sys
++import os
++for _thread_env in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
++    os.environ.setdefault(_thread_env, "1")
+ import asyncio
+ 
++# 修复 Windows 控制台编码问题：尽早设置 UTF-8
++if os.name == 'nt':
++    # 只用 reconfigure，不用 TextIOWrapper 替换（后者会触发 Windows 驱动器枚举弹窗）
++    if hasattr(sys.stdout, 'reconfigure'):
++        try:
++            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
++            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
++        except Exception:
++            pass
++
+ # Windows 需要使用 ProactorEventLoop 以支持 Playwright 子进程
+ if sys.platform == 'win32':
+     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+@@ -12,13 +25,9 @@ if cfg.get("redis.server.enabled", False):
+ import uvicorn
+ from core.print import print_warning, print_info, print_success
+ import threading
+-from driver.auth import start_auth_service   
+-import os
++from driver.auth import start_auth_service
+ 
+ if __name__ == '__main__':
+-    print("环境变量:")
+-    for k,v in os.environ.items():
+-        print(f"{k}={v}")
+     if cfg.args.init=="True":
+         import init_sys as init
+         init.init()
+@@ -107,12 +116,10 @@ if __name__ == '__main__':
+         )
+         server = uvicorn.Server(config)
+         
+-        # 确保使用 ProactorEventLoop
+-        if not isinstance(asyncio.get_event_loop(), asyncio.ProactorEventLoop):
+-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+-            loop = asyncio.new_event_loop()
+-            asyncio.set_event_loop(loop)
+-        
++        # 确保使用 ProactorEventLoop（Python 3.14 不再自动创建事件循环）
++        loop = asyncio.new_event_loop()
++        asyncio.set_event_loop(loop)
++
+         asyncio.run(server.serve())
+     else:
+         uvicorn.run("web:app", host="0.0.0.0", port=int(cfg.get("port",8001)),
+diff --git a/tests/test_collection_guard.py b/tests/test_collection_guard.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..689dd95d65edbc7d527d9323cc0b006820e1d918
+--- /dev/null
++++ b/tests/test_collection_guard.py
+@@ -0,0 +1,56 @@
++import tempfile
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++
++from core.collection_guard import CollectionGuard, guarded_collection
++
++
++class CollectionGuardTests(unittest.TestCase):
++    def setUp(self):
++        self.directory = tempfile.TemporaryDirectory()
++        self.addCleanup(self.directory.cleanup)
++        self.now = 10000
++        self.path = Path(self.directory.name) / "state.json"
++        self.guard = CollectionGuard(self.path, clock=lambda: self.now)
++
++    def test_duplicate_and_interval(self):
++        self.assertTrue(self.guard.enqueue("a")[0])
++        self.assertFalse(self.guard.enqueue("a")[0])
++        self.assertTrue(self.guard.begin("a")[0])
++        self.assertFalse(self.guard.begin("a")[0])
++        self.guard.finish("a")
++        self.assertFalse(self.guard.enqueue("a")[0])
++        self.now += 300
++        self.assertTrue(self.guard.enqueue("a")[0])
++
++    def test_persistent_global_exponential_cooldown(self):
++        for expected in (1800, 3600, 7200, 7200):
++            self.guard.rate_limited()
++            loaded = CollectionGuard(self.path, clock=lambda: self.now)
++            self.assertEqual(loaded.status()["remaining_seconds"], expected)
++            self.assertFalse(loaded.begin("other")[0])
++            self.now += expected
++        self.guard.success()
++        self.guard.rate_limited()
++        self.assertEqual(self.guard.status()["remaining_seconds"], 1800)
++
++    def test_exception_releases_active_account(self):
++        class Collector:
++            @guarded_collection
++            def collect(self, faker_id="", Mps_id=""):
++                raise ValueError("test")
++        with patch("core.collection_guard.collection_guard", self.guard):
++            with self.assertRaises(ValueError):
++                Collector().collect(Mps_id="a")
++        self.assertEqual(self.guard.status()["active_count"], 0)
++
++    def test_failed_persistence_does_not_leave_active_account(self):
++        with patch.object(self.guard, "_save", side_effect=OSError("test")):
++            with self.assertRaises(OSError):
++                self.guard.begin("a")
++        self.assertEqual(self.guard.status()["active_count"], 0)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_qrcode_image.py b/tests/test_qrcode_image.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..76d962fc7fae1ff09fc905b3b91e005d074850a2
+--- /dev/null
++++ b/tests/test_qrcode_image.py
+@@ -0,0 +1,36 @@
++import tempfile
++import unittest
++from pathlib import Path
++
++from PIL import Image, ImageDraw
++from driver.qrcode import validate_qrcode_image
++
++
++class QRCodeImageTests(unittest.TestCase):
++    def test_rejects_blank_page_screenshot(self):
++        with tempfile.TemporaryDirectory() as folder:
++            path = Path(folder) / "qr.png"
++            Image.new("RGB", (1834, 1005), "white").save(path)
++            with self.assertRaises(ValueError):
++                validate_qrcode_image(path)
++
++    def test_rejects_tiny_image(self):
++        with tempfile.TemporaryDirectory() as folder:
++            path = Path(folder) / "qr.png"
++            image = Image.new("RGB", (40, 40), "white")
++            ImageDraw.Draw(image).rectangle((0, 0, 20, 40), fill="black")
++            image.save(path)
++            with self.assertRaises(ValueError):
++                validate_qrcode_image(path)
++
++    def test_accepts_loaded_image(self):
++        with tempfile.TemporaryDirectory() as folder:
++            path = Path(folder) / "qr.png"
++            image = Image.new("RGB", (200, 200), "white")
++            ImageDraw.Draw(image).rectangle((20, 20, 80, 80), fill="black")
++            image.save(path)
++            validate_qrcode_image(path)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/web_ui/package-lock.json b/web_ui/package-lock.json
+index 9d9836b5bdf24dfad4da95265413974d4eae6bb5..7b4960e916ff5e04a48227f574a5ecaf7828f437 100644
+--- a/web_ui/package-lock.json
++++ b/web_ui/package-lock.json
+@@ -19,7 +19,7 @@
+         "vue-router": "^4.0.0"
+       },
+       "devDependencies": {
+-        "@vitejs/plugin-vue": "^2.0.0",
++        "@vitejs/plugin-vue": "^6.0.10",
+         "fs-extra": "^11.2.0",
+         "typescript": "^4.5.0",
+         "vite": "^8.0.8",
+@@ -82,27 +82,30 @@
+       }
+     },
+     "node_modules/@babel/helper-string-parser": {
+-      "version": "7.27.1",
+-      "resolved": "https://registry.npmjs.org/@babel/helper-string-parser/-/helper-string-parser-7.27.1.tgz",
+-      "integrity": "sha512-qMlSxKbpRlAridDExk92nSobyDdpPijUq2DW6oDnUqd0iOGxmQjyqhMIihI9+zv4LPyZdRje2cavWPbCbWm3eA==",
++      "version": "7.29.7",
++      "resolved": "https://registry.npmjs.org/@babel/helper-string-parser/-/helper-string-parser-7.29.7.tgz",
++      "integrity": "sha512-Pb5ijPrZ89GDH8223L4UP8i6QApWxs04RbPQJTeWDV0/keR2E36MeKnyr6LYmUUvqRRI+Iv87SuF1W6ErINzYw==",
++      "license": "MIT",
+       "engines": {
+         "node": ">=6.9.0"
+       }
+     },
+     "node_modules/@babel/helper-validator-identifier": {
+-      "version": "7.27.1",
+-      "resolved": "https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-7.27.1.tgz",
+-      "integrity": "sha512-D2hP9eA+Sqx1kBZgzxZh0y1trbuU+JoDkiEwqhQ36nodYqJwyEIhPSdMNd7lOm/4io72luTPWH20Yda0xOuUow==",
++      "version": "7.29.7",
++      "resolved": "https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-7.29.7.tgz",
++      "integrity": "sha512-qehxGkRj55h/ff8EMaJ+cYhyaKlHIxqYDn682wQD7RNp9UujOQsHog2uS0r2vzr4pW+sXf90NeeayjcNaX3fFg==",
++      "license": "MIT",
+       "engines": {
+         "node": ">=6.9.0"
+       }
+     },
+     "node_modules/@babel/parser": {
+-      "version": "7.27.3",
+-      "resolved": "https://registry.npmjs.org/@babel/parser/-/parser-7.27.3.tgz",
+-      "integrity": "sha512-xyYxRj6+tLNDTWi0KCBcZ9V7yg3/lwL9DWh9Uwh/RIVlIfFidggcgxKX3GCXwCiswwcGRawBKbEg2LG/Y8eJhw==",
++      "version": "7.29.9",
++      "resolved": "https://registry.npmjs.org/@babel/parser/-/parser-7.29.9.tgz",
++      "integrity": "sha512-CjXrNHTnvqBVqHgdBysY3vk2T8tpJHb5/RMeHJBTyVa9xgugCB0CJTx/3oO8RV2QRQP391RWpB7D6hLjm8V9uA==",
++      "license": "MIT",
+       "dependencies": {
+-        "@babel/types": "^7.27.3"
++        "@babel/types": "^7.29.8"
+       },
+       "bin": {
+         "parser": "bin/babel-parser.js"
+@@ -121,12 +124,13 @@
+       }
+     },
+     "node_modules/@babel/types": {
+-      "version": "7.27.3",
+-      "resolved": "https://registry.npmjs.org/@babel/types/-/types-7.27.3.tgz",
+-      "integrity": "sha512-Y1GkI4ktrtvmawoSq+4FCVHNryea6uR+qUQy0AGxLSsjCX0nVmkYQMBLHDkXZuo5hGx7eYdnIaslsdBFm7zbUw==",
++      "version": "7.29.8",
++      "resolved": "https://registry.npmjs.org/@babel/types/-/types-7.29.8.tgz",
++      "integrity": "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg==",
++      "license": "MIT",
+       "dependencies": {
+-        "@babel/helper-string-parser": "^7.27.1",
+-        "@babel/helper-validator-identifier": "^7.27.1"
++        "@babel/helper-string-parser": "^7.29.7",
++        "@babel/helper-validator-identifier": "^7.29.7"
+       },
+       "engines": {
+         "node": ">=6.9.0"
+@@ -222,40 +226,6 @@
+         "node": ">=10"
+       }
+     },
+-    "node_modules/@emnapi/core": {
+-      "version": "1.9.2",
+-      "resolved": "https://registry.npmjs.org/@emnapi/core/-/core-1.9.2.tgz",
+-      "integrity": "sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA==",
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "dependencies": {
+-        "@emnapi/wasi-threads": "1.2.1",
+-        "tslib": "^2.4.0"
+-      }
+-    },
+-    "node_modules/@emnapi/runtime": {
+-      "version": "1.9.2",
+-      "resolved": "https://registry.npmjs.org/@emnapi/runtime/-/runtime-1.9.2.tgz",
+-      "integrity": "sha512-3U4+MIWHImeyu1wnmVygh5WlgfYDtyf0k8AbLhMFxOipihf6nrWC4syIm/SwEeec0mNSafiiNnMJwbza/Is6Lw==",
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "dependencies": {
+-        "tslib": "^2.4.0"
+-      }
+-    },
+-    "node_modules/@emnapi/wasi-threads": {
+-      "version": "1.2.1",
+-      "resolved": "https://registry.npmjs.org/@emnapi/wasi-threads/-/wasi-threads-1.2.1.tgz",
+-      "integrity": "sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w==",
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "dependencies": {
+-        "tslib": "^2.4.0"
+-      }
+-    },
+     "node_modules/@emotion/hash": {
+       "version": "0.9.2",
+       "resolved": "https://registry.npmmirror.com/@emotion/hash/-/hash-0.9.2.tgz",
+@@ -269,9 +239,10 @@
+       "license": "MIT"
+     },
+     "node_modules/@jridgewell/sourcemap-codec": {
+-      "version": "1.5.0",
+-      "resolved": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.5.0.tgz",
+-      "integrity": "sha512-gv3ZRaISU3fjPAgNsriBRqGWQL6quFx04YMPW/zD8XMLsU32mhCCbfbO6KZFLjvYpCZ8zyDEgqsgf+PwPaM7GQ=="
++      "version": "1.6.0",
++      "resolved": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.6.0.tgz",
++      "integrity": "sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==",
++      "license": "MIT"
+     },
+     "node_modules/@lezer/common": {
+       "version": "1.5.2",
+@@ -303,39 +274,37 @@
+       "integrity": "sha512-l0h88YhZFyKdXIFNfSWpyjStDjGHwZ/U7iobcK1cQQD8sejsONdQtTVU+1wVN1PBw40PiiHB1vA5S7VTfQiP9g==",
+       "license": "MIT"
+     },
+-    "node_modules/@napi-rs/wasm-runtime": {
+-      "version": "1.1.3",
+-      "resolved": "https://registry.npmjs.org/@napi-rs/wasm-runtime/-/wasm-runtime-1.1.3.tgz",
+-      "integrity": "sha512-xK9sGVbJWYb08+mTJt3/YV24WxvxpXcXtP6B172paPZ+Ts69Re9dAr7lKwJoeIx8OoeuimEiRZ7umkiUVClmmQ==",
++    "node_modules/@oxc-project/types": {
++      "version": "0.153.0",
++      "resolved": "https://registry.npmjs.org/@oxc-project/types/-/types-0.153.0.tgz",
++      "integrity": "sha512-jSNrRIyvPVLL5E1z/tS5zLAprosGz/FuI1PWwEOz59j3E4TTTzSpqKb/RDGqJhhW0QHYISGXxq582wGx6T11Tw==",
+       "dev": true,
+       "license": "MIT",
+-      "optional": true,
+-      "dependencies": {
+-        "@tybys/wasm-util": "^0.10.1"
+-      },
+       "funding": {
+-        "type": "github",
+-        "url": "https://github.com/sponsors/Brooooooklyn"
+-      },
+-      "peerDependencies": {
+-        "@emnapi/core": "^1.7.1",
+-        "@emnapi/runtime": "^1.7.1"
++        "url": "https://github.com/sponsors/oxc-project"
+       }
+     },
+-    "node_modules/@oxc-project/types": {
+-      "version": "0.124.0",
+-      "resolved": "https://registry.npmjs.org/@oxc-project/types/-/types-0.124.0.tgz",
+-      "integrity": "sha512-VBFWMTBvHxS11Z5Lvlr3IWgrwhMTXV+Md+EQF0Xf60+wAdsGFTBx7X7K/hP4pi8N7dcm1RvcHwDxZ16Qx8keUg==",
++    "node_modules/@rolldown/binding-android-arm-eabi": {
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-android-arm-eabi/-/binding-android-arm-eabi-1.2.13.tgz",
++      "integrity": "sha512-Vu/NICrgdRvUOeaJZIyB2FP63s6fO/4ud5l8dXmxDx9yDyn+mN0y+gsvsVviSli+T361Aqo0h46EuMoobrwawA==",
++      "cpu": [
++        "arm"
++      ],
+       "dev": true,
+       "license": "MIT",
+-      "funding": {
+-        "url": "https://github.com/sponsors/Boshen"
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
+       }
+     },
+     "node_modules/@rolldown/binding-android-arm64": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-android-arm64/-/binding-android-arm64-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-YYe6aWruPZDtHNpwu7+qAHEMbQ/yRl6atqb/AhznLTnD3UY99Q1jE7ihLSahNWkF4EqRPVC4SiR4O0UkLK02tA==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-android-arm64/-/binding-android-arm64-1.2.13.tgz",
++      "integrity": "sha512-6LEoIrGy5vvCd2boNnv2soPSUZj/PRvhp8R/t9KlX+mIZxThIE/ZqxrGXxmuNX0FuvQFvLdZr7S4HrYpYBVhEQ==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -350,9 +319,9 @@
+       }
+     },
+     "node_modules/@rolldown/binding-darwin-arm64": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-darwin-arm64/-/binding-darwin-arm64-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-oArR/ig8wNTPYsXL+Mzhs0oxhxfuHRfG7Ikw7jXsw8mYOtk71W0OkF2VEVh699pdmzjPQsTjlD1JIOoHkLP1Fg==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-darwin-arm64/-/binding-darwin-arm64-1.2.13.tgz",
++      "integrity": "sha512-CaJSRzlQ6Q+zkDMVA9OkVxBjVoPRCDEE3v0FSJ9kIQBgRjFApA3Si4ijhbNVUji7ZJt+PfO0e46qy4nPInHUPA==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -367,9 +336,9 @@
+       }
+     },
+     "node_modules/@rolldown/binding-darwin-x64": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-darwin-x64/-/binding-darwin-x64-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-YzeVqOqjPYvUbJSWJ4EDL8ahbmsIXQpgL3JVipmN+MX0XnXMeWomLN3Fb+nwCmP/jfyqte5I3XRSm7OfQrbyxw==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-darwin-x64/-/binding-darwin-x64-1.2.13.tgz",
++      "integrity": "sha512-e4r340I5hxSzJkD3YJBxgzq/rJ3wwxwdLLb2FPt1Zpyem20nrQPT11DDEEkazwxaHumH8wpglsp/Ozgj/wT6mw==",
+       "cpu": [
+         "x64"
+       ],
+@@ -384,9 +353,9 @@
+       }
+     },
+     "node_modules/@rolldown/binding-freebsd-x64": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-freebsd-x64/-/binding-freebsd-x64-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-9Erhx956jeQ0nNTyif1+QWAXDRD38ZNjr//bSHrt6wDwB+QkAfl2q6Mn1k6OBPerznjRmbM10lgRb1Pli4xZPw==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-freebsd-x64/-/binding-freebsd-x64-1.2.13.tgz",
++      "integrity": "sha512-hoBWDZ4/K/mJKVMbsgUd1jfpA2DiOrJ54mpegObU9TBHBBrtX4FLIXJJQRDPZ/2Dn91GvPob+Z2hwKJzf4E5SQ==",
+       "cpu": [
+         "x64"
+       ],
+@@ -401,9 +370,9 @@
+       }
+     },
+     "node_modules/@rolldown/binding-linux-arm-gnueabihf": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm-gnueabihf/-/binding-linux-arm-gnueabihf-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-cVwk0w8QbZJGTnP/AHQBs5yNwmpgGYStL88t4UIaqcvYJWBfS0s3oqVLZPwsPU6M0zlW4GqjP0Zq5MnAGwFeGA==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm-gnueabihf/-/binding-linux-arm-gnueabihf-1.2.13.tgz",
++      "integrity": "sha512-oF9fZu3vTWnTiVAkDFxU9PJLt1nh20K9RRpuHsR7ZnE2L7XookBbDBVLojCVSLGbvtSlxeUNnjAj6DbNsKyzbg==",
+       "cpu": [
+         "arm"
+       ],
+@@ -418,13 +387,16 @@
+       }
+     },
+     "node_modules/@rolldown/binding-linux-arm64-gnu": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm64-gnu/-/binding-linux-arm64-gnu-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-eBZ/u8iAK9SoHGanqe/jrPnY0JvBN6iXbVOsbO38mbz+ZJsaobExAm1Iu+rxa4S1l2FjG0qEZn4Rc6X8n+9M+w==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm64-gnu/-/binding-linux-arm64-gnu-1.2.13.tgz",
++      "integrity": "sha512-DTpb/+jMiqWMPgphn4ksW1zW+XLJ6dJJ9FMvnIk9I291LhCctMPhMYJrP5t9p6C9qa3KXadDdUEZHBaPh3kNxQ==",
+       "cpu": [
+         "arm64"
+       ],
+       "dev": true,
++      "libc": [
++        "glibc"
++      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -435,13 +407,16 @@
+       }
+     },
+     "node_modules/@rolldown/binding-linux-arm64-musl": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm64-musl/-/binding-linux-arm64-musl-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-ZvRYMGrAklV9PEkgt4LQM6MjQX2P58HPAuecwYObY2DhS2t35R0I810bKi0wmaYORt6m/2Sm+Z+nFgb0WhXNcQ==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm64-musl/-/binding-linux-arm64-musl-1.2.13.tgz",
++      "integrity": "sha512-xU+Kvv9N2A3SY35zFh1FWWNjxbadE/BKeqnkXe7vScU4GZsw757BlVmDLITZEq8DPpk6m7uoDYkK7P+x/uU5Ow==",
+       "cpu": [
+         "arm64"
+       ],
+       "dev": true,
++      "libc": [
++        "musl"
++      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -452,13 +427,16 @@
+       }
+     },
+     "node_modules/@rolldown/binding-linux-ppc64-gnu": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-ppc64-gnu/-/binding-linux-ppc64-gnu-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-VDpgGBzgfg5hLg+uBpCLoFG5kVvEyafmfxGUV0UHLcL5irxAK7PKNeC2MwClgk6ZAiNhmo9FLhRYgvMmedLtnQ==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-ppc64-gnu/-/binding-linux-ppc64-gnu-1.2.13.tgz",
++      "integrity": "sha512-XMk/hnhh25oQ756Lclb1Q11h4ll0xC0Esa5w4Vzp+mAE2S3AGJgeM0SonrIgY8fHhjarb6hcoTuwoFG0VVP2ig==",
+       "cpu": [
+         "ppc64"
+       ],
+       "dev": true,
++      "libc": [
++        "glibc"
++      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -469,13 +447,16 @@
+       }
+     },
+     "node_modules/@rolldown/binding-linux-s390x-gnu": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-s390x-gnu/-/binding-linux-s390x-gnu-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-y1uXY3qQWCzcPgRJATPSOUP4tCemh4uBdY7e3EZbVwCJTY3gLJWnQABgeUetvED+bt1FQ01OeZwvhLS2bpNrAQ==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-s390x-gnu/-/binding-linux-s390x-gnu-1.2.13.tgz",
++      "integrity": "sha512-U1BoTHYmlywE2n3HUWjzZ+8EQsKr+OwpxYuDWaubx42tUL8QSL7nOqRz/NVHanibbFP3M1Rxuprz/wNcbMKjqw==",
+       "cpu": [
+         "s390x"
+       ],
+       "dev": true,
++      "libc": [
++        "glibc"
++      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -486,13 +467,16 @@
+       }
+     },
+     "node_modules/@rolldown/binding-linux-x64-gnu": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-x64-gnu/-/binding-linux-x64-gnu-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-023bTPBod7J3Y/4fzAN6QtpkSABR0rigtrwaP+qSEabUh5zf6ELr9Nc7GujaROuPY3uwdSIXWrvhn1KxOvurWA==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-x64-gnu/-/binding-linux-x64-gnu-1.2.13.tgz",
++      "integrity": "sha512-J4cm80Pc6wEwV5AZ42o62sIQgDk+Y7R2s646jIwuvO+4V46QB58N4vVuMPWCBaNgursXLpmUWJV//WQAkPvHBQ==",
+       "cpu": [
+         "x64"
+       ],
+       "dev": true,
++      "libc": [
++        "glibc"
++      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -503,13 +487,16 @@
+       }
+     },
+     "node_modules/@rolldown/binding-linux-x64-musl": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-x64-musl/-/binding-linux-x64-musl-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-witB2O0/hU4CgfOOKUoeFgQ4GktPi1eEbAhaLAIpgD6+ZnhcPkUtPsoKKHRzmOoWPZue46IThdSgdo4XneOLYw==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-x64-musl/-/binding-linux-x64-musl-1.2.13.tgz",
++      "integrity": "sha512-W0euZS40U4V6JkmEnVCIX9mcsL6cbXQ4X8c2w+MMOIjFg68TXUW+u3RT+2e1t1pv9mg/EP3pDtK3POXdQ7Rxyw==",
+       "cpu": [
+         "x64"
+       ],
+       "dev": true,
++      "libc": [
++        "musl"
++      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -520,9 +507,9 @@
+       }
+     },
+     "node_modules/@rolldown/binding-openharmony-arm64": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-openharmony-arm64/-/binding-openharmony-arm64-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-UCL68NJ0Ud5zRipXZE9dF5PmirzJE4E4BCIOOssEnM7wLDsxjc6Qb0sGDxTNRTP53I6MZpygyCpY8Aa8sPfKPg==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-openharmony-arm64/-/binding-openharmony-arm64-1.2.13.tgz",
++      "integrity": "sha512-do/AF/4n9MRshia3a5aXoy8xM2c6mgfT6D7H/dY6my5z+hfCIR4ab7mk4IRj++nsEQpKy39kd0DQnDq+r692tw==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -536,29 +523,10 @@
+         "node": "^20.19.0 || >=22.12.0"
+       }
+     },
+-    "node_modules/@rolldown/binding-wasm32-wasi": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-wasm32-wasi/-/binding-wasm32-wasi-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-ApLruZq/ig+nhaE7OJm4lDjayUnOHVUa77zGeqnqZ9pn0ovdVbbNPerVibLXDmWeUZXjIYIT8V3xkT58Rm9u5Q==",
+-      "cpu": [
+-        "wasm32"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "dependencies": {
+-        "@emnapi/core": "1.9.2",
+-        "@emnapi/runtime": "1.9.2",
+-        "@napi-rs/wasm-runtime": "^1.1.3"
+-      },
+-      "engines": {
+-        "node": ">=14.0.0"
+-      }
+-    },
+     "node_modules/@rolldown/binding-win32-arm64-msvc": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-win32-arm64-msvc/-/binding-win32-arm64-msvc-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-KmoUoU7HnN+Si5YWJigfTws1jz1bKBYDQKdbLspz0UaqjjFkddHsqorgiW1mxcAj88lYUE6NC/zJNwT+SloqtA==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-win32-arm64-msvc/-/binding-win32-arm64-msvc-1.2.13.tgz",
++      "integrity": "sha512-6FtUf2cJZobutJdxnGYX8z0vtbgqU0b2v8vfBhkXb9wp2MppMFtkunE+IaOntyi01rkIQoPW2GHABtfzsC0BRQ==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -573,9 +541,9 @@
+       }
+     },
+     "node_modules/@rolldown/binding-win32-x64-msvc": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/binding-win32-x64-msvc/-/binding-win32-x64-msvc-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-3P2A8L+x75qavWLe/Dll3EYBJLQmtkJN8rfh+U/eR3MqMgL/h98PhYI+JFfXuDPgPeCB7iZAKiqii5vqOvnA0g==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-win32-x64-msvc/-/binding-win32-x64-msvc-1.2.13.tgz",
++      "integrity": "sha512-UKhFaZTeTcbKrb3iU82m17jVcPEAoqDkCN5MBqgPyZSwp/cQmib21crTS0DdH7T1B7wZRWEI89YQAOJMet5yhg==",
+       "cpu": [
+         "x64"
+       ],
+@@ -590,9 +558,9 @@
+       }
+     },
+     "node_modules/@rolldown/pluginutils": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-UromN0peaE53IaBRe9W7CjrZgXl90fqGpK+mIZbA3qSTeYqg3pqpROBdIPvOG3F5ereDHNwoHBI2e50n1BDr1g==",
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.1.tgz",
++      "integrity": "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==",
+       "dev": true,
+       "license": "MIT"
+     },
+@@ -606,74 +574,78 @@
+         "nanopop": "^2.1.0"
+       }
+     },
+-    "node_modules/@tybys/wasm-util": {
+-      "version": "0.10.1",
+-      "resolved": "https://registry.npmjs.org/@tybys/wasm-util/-/wasm-util-0.10.1.tgz",
+-      "integrity": "sha512-9tTaPJLSiejZKx+Bmog4uSubteqTvFrVrURwkmHixBo0G4seD0zUxp98E1DzUBJxLQ3NPwXrGKDiVjwx/DpPsg==",
+-      "dev": true,
++    "node_modules/@types/trusted-types": {
++      "version": "2.0.7",
++      "resolved": "https://registry.npmjs.org/@types/trusted-types/-/trusted-types-2.0.7.tgz",
++      "integrity": "sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==",
+       "license": "MIT",
+-      "optional": true,
+-      "dependencies": {
+-        "tslib": "^2.4.0"
+-      }
++      "optional": true
+     },
+     "node_modules/@vitejs/plugin-vue": {
+-      "version": "2.3.4",
+-      "resolved": "https://registry.npmjs.org/@vitejs/plugin-vue/-/plugin-vue-2.3.4.tgz",
+-      "integrity": "sha512-IfFNbtkbIm36O9KB8QodlwwYvTEsJb4Lll4c2IwB3VHc2gie2mSPtSzL0eYay7X2jd/2WX02FjSGTWR6OPr/zg==",
++      "version": "6.0.10",
++      "resolved": "https://registry.npmjs.org/@vitejs/plugin-vue/-/plugin-vue-6.0.10.tgz",
++      "integrity": "sha512-b80aUQh3n+qEzzZm5oQp3rT2QImeCx58K6eFl/RkJ3d65KW0kTuv5lNsLRVAjbW9YRUpo/wzmvzMgV34bTAItA==",
+       "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@rolldown/pluginutils": "^1.0.1"
++      },
+       "engines": {
+-        "node": ">=12.0.0"
++        "node": "^20.19.0 || >=22.12.0"
+       },
+       "peerDependencies": {
+-        "vite": "^2.5.10",
+-        "vue": "^3.2.25"
++        "vite": "^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0",
++        "vue": "^3.2.25 || ^3.6.0-rc.10"
+       }
+     },
+     "node_modules/@vue/compiler-core": {
+-      "version": "3.5.14",
+-      "resolved": "https://registry.npmjs.org/@vue/compiler-core/-/compiler-core-3.5.14.tgz",
+-      "integrity": "sha512-k7qMHMbKvoCXIxPhquKQVw3Twid3Kg4s7+oYURxLGRd56LiuHJVrvFKI4fm2AM3c8apqODPfVJGoh8nePbXMRA==",
++      "version": "3.5.43",
++      "resolved": "https://registry.npmjs.org/@vue/compiler-core/-/compiler-core-3.5.43.tgz",
++      "integrity": "sha512-zdiLhnbe1QQqgDT8xZMpNmyqZ3qlI+/Q/FHQco57Kwl/b05HhCzN6eVGN9QU9rbga4CrS0H5SYY8VGHZCt/1Hg==",
++      "license": "MIT",
+       "dependencies": {
+-        "@babel/parser": "^7.27.2",
+-        "@vue/shared": "3.5.14",
+-        "entities": "^4.5.0",
++        "@babel/parser": "^7.29.8",
++        "@vue/shared": "3.5.43",
++        "entities": "^7.0.1",
+         "estree-walker": "^2.0.2",
+         "source-map-js": "^1.2.1"
+       }
+     },
+     "node_modules/@vue/compiler-dom": {
+-      "version": "3.5.14",
+-      "resolved": "https://registry.npmjs.org/@vue/compiler-dom/-/compiler-dom-3.5.14.tgz",
+-      "integrity": "sha512-1aOCSqxGOea5I80U2hQJvXYpPm/aXo95xL/m/mMhgyPUsKe9jhjwWpziNAw7tYRnbz1I61rd9Mld4W9KmmRoug==",
++      "version": "3.5.43",
++      "resolved": "https://registry.npmjs.org/@vue/compiler-dom/-/compiler-dom-3.5.43.tgz",
++      "integrity": "sha512-PEZoAk3NQmsn/ejMzSOCyTYqwGqczrWm70PuhBKjjv1+TCoQAaO/zOqNwjV+honlNstT5ILxtc+8r8UUfj+iEQ==",
++      "license": "MIT",
+       "dependencies": {
+-        "@vue/compiler-core": "3.5.14",
+-        "@vue/shared": "3.5.14"
++        "@vue/compiler-core": "3.5.43",
++        "@vue/shared": "3.5.43"
+       }
+     },
+     "node_modules/@vue/compiler-sfc": {
+-      "version": "3.5.14",
+-      "resolved": "https://registry.npmjs.org/@vue/compiler-sfc/-/compiler-sfc-3.5.14.tgz",
+-      "integrity": "sha512-9T6m/9mMr81Lj58JpzsiSIjBgv2LiVoWjIVa7kuXHICUi8LiDSIotMpPRXYJsXKqyARrzjT24NAwttrMnMaCXA==",
++      "version": "3.5.43",
++      "resolved": "https://registry.npmjs.org/@vue/compiler-sfc/-/compiler-sfc-3.5.43.tgz",
++      "integrity": "sha512-FCbrG3XNCRl+js3huuKx4IVHBLTvMkJhVepjbxSPu1gn4yWLaYtGNQdjJGZaMytXB6qb76qQDDmDSLy/vkmleQ==",
++      "license": "MIT",
+       "dependencies": {
+-        "@babel/parser": "^7.27.2",
+-        "@vue/compiler-core": "3.5.14",
+-        "@vue/compiler-dom": "3.5.14",
+-        "@vue/compiler-ssr": "3.5.14",
+-        "@vue/shared": "3.5.14",
++        "@babel/parser": "^7.29.8",
++        "@vue/compiler-core": "3.5.43",
++        "@vue/compiler-dom": "3.5.43",
++        "@vue/compiler-ssr": "3.5.43",
++        "@vue/shared": "3.5.43",
+         "estree-walker": "^2.0.2",
+-        "magic-string": "^0.30.17",
+-        "postcss": "^8.5.3",
++        "magic-string": "^0.30.21",
++        "postcss": "^8.5.28",
+         "source-map-js": "^1.2.1"
+       }
+     },
+     "node_modules/@vue/compiler-ssr": {
+-      "version": "3.5.14",
+-      "resolved": "https://registry.npmjs.org/@vue/compiler-ssr/-/compiler-ssr-3.5.14.tgz",
+-      "integrity": "sha512-Y0G7PcBxr1yllnHuS/NxNCSPWnRGH4Ogrp0tsLA5QemDZuJLs99YjAKQ7KqkHE0vCg4QTKlQzXLKCMF7WPSl7Q==",
++      "version": "3.5.43",
++      "resolved": "https://registry.npmjs.org/@vue/compiler-ssr/-/compiler-ssr-3.5.43.tgz",
++      "integrity": "sha512-GF62orf7KiJX9RqrHNGrYBudsQGD0OhJ5nDs90O8UiDuS40+YMYomiXu6w6EuvtXuRDc3MSNis3EaaSKAVSWpg==",
++      "license": "MIT",
+       "dependencies": {
+-        "@vue/compiler-dom": "3.5.14",
+-        "@vue/shared": "3.5.14"
++        "@vue/compiler-dom": "3.5.43",
++        "@vue/shared": "3.5.43"
+       }
+     },
+     "node_modules/@vue/devtools-api": {
+@@ -682,49 +654,64 @@
+       "integrity": "sha512-sGhTPMuXqZ1rVOk32RylztWkfXTRhuS7vgAKv0zjqk8gbsHkJ7xfFf+jbySxt7tWObEJwyKaHMikV/WGDiQm8g=="
+     },
+     "node_modules/@vue/reactivity": {
+-      "version": "3.5.14",
+-      "resolved": "https://registry.npmjs.org/@vue/reactivity/-/reactivity-3.5.14.tgz",
+-      "integrity": "sha512-7cK1Hp343Fu/SUCCO52vCabjvsYu7ZkOqyYu7bXV9P2yyfjUMUXHZafEbq244sP7gf+EZEz+77QixBTuEqkQQw==",
++      "version": "3.5.43",
++      "resolved": "https://registry.npmjs.org/@vue/reactivity/-/reactivity-3.5.43.tgz",
++      "integrity": "sha512-G/c9GyOZNI2jVaaS6OX1EF1SSFSv7H0ERqNTl4+DTFMlZmB5eVAB53aLQNam/7NL2NPtaDD7RdVrzf8uJzMuOA==",
++      "license": "MIT",
+       "dependencies": {
+-        "@vue/shared": "3.5.14"
++        "@vue/shared": "3.5.43"
+       }
+     },
+     "node_modules/@vue/runtime-core": {
+-      "version": "3.5.14",
+-      "resolved": "https://registry.npmjs.org/@vue/runtime-core/-/runtime-core-3.5.14.tgz",
+-      "integrity": "sha512-w9JWEANwHXNgieAhxPpEpJa+0V5G0hz3NmjAZwlOebtfKyp2hKxKF0+qSh0Xs6/PhfGihuSdqMprMVcQU/E6ag==",
++      "version": "3.5.43",
++      "resolved": "https://registry.npmjs.org/@vue/runtime-core/-/runtime-core-3.5.43.tgz",
++      "integrity": "sha512-hU6U6VnVhBGQDpvlnnDlIB8ZGJBiOcgk2lh/0InltHiz3D8oSkluvuvY+do1G2H3+udeKFsmaBlgVYP7gXQzEw==",
++      "license": "MIT",
+       "dependencies": {
+-        "@vue/reactivity": "3.5.14",
+-        "@vue/shared": "3.5.14"
++        "@vue/reactivity": "3.5.43",
++        "@vue/shared": "3.5.43"
+       }
+     },
+     "node_modules/@vue/runtime-dom": {
+-      "version": "3.5.14",
+-      "resolved": "https://registry.npmjs.org/@vue/runtime-dom/-/runtime-dom-3.5.14.tgz",
+-      "integrity": "sha512-lCfR++IakeI35TVR80QgOelsUIdcKjd65rWAMfdSlCYnaEY5t3hYwru7vvcWaqmrK+LpI7ZDDYiGU5V3xjMacw==",
++      "version": "3.5.43",
++      "resolved": "https://registry.npmjs.org/@vue/runtime-dom/-/runtime-dom-3.5.43.tgz",
++      "integrity": "sha512-Bb2Jc0YjjJdMt1SJmb9b2L/IWd3I8lIT9x9eS/xvvP9CiVgna0ffua74xKRmt4/uSJ+0r4iN8ex1jrqkhQGWQw==",
++      "license": "MIT",
+       "dependencies": {
+-        "@vue/reactivity": "3.5.14",
+-        "@vue/runtime-core": "3.5.14",
+-        "@vue/shared": "3.5.14",
+-        "csstype": "^3.1.3"
++        "@vue/reactivity": "3.5.43",
++        "@vue/runtime-core": "3.5.43",
++        "@vue/shared": "3.5.43",
++        "csstype": "^3.2.3"
+       }
+     },
+     "node_modules/@vue/server-renderer": {
+-      "version": "3.5.14",
+-      "resolved": "https://registry.npmjs.org/@vue/server-renderer/-/server-renderer-3.5.14.tgz",
+-      "integrity": "sha512-Rf/ISLqokIvcySIYnv3tNWq40PLpNLDLSJwwVWzG6MNtyIhfbcrAxo5ZL9nARJhqjZyWWa40oRb2IDuejeuv6w==",
++      "version": "3.5.43",
++      "resolved": "https://registry.npmjs.org/@vue/server-renderer/-/server-renderer-3.5.43.tgz",
++      "integrity": "sha512-l2Ygjv9NehV94PSBxNWsAHC0j/eIIKbn92mBuWXAPGLnn6HfJ6MH5ubsd+Nk0YoZ5FRuxWI1P2VSoh+dbPQhCQ==",
++      "license": "MIT",
+       "dependencies": {
+-        "@vue/compiler-ssr": "3.5.14",
+-        "@vue/shared": "3.5.14"
+-      },
+-      "peerDependencies": {
+-        "vue": "3.5.14"
++        "@vue/compiler-ssr": "3.5.43",
++        "@vue/runtime-dom": "3.5.43",
++        "@vue/shared": "3.5.43"
+       }
+     },
+     "node_modules/@vue/shared": {
+-      "version": "3.5.14",
+-      "resolved": "https://registry.npmjs.org/@vue/shared/-/shared-3.5.14.tgz",
+-      "integrity": "sha512-oXTwNxVfc9EtP1zzXAlSlgARLXNC84frFYkS0HHz0h3E4WZSP9sywqjqzGCP9Y34M8ipNmd380pVgmMuwELDyQ=="
++      "version": "3.5.43",
++      "resolved": "https://registry.npmjs.org/@vue/shared/-/shared-3.5.43.tgz",
++      "integrity": "sha512-uksS7YGMR5NZyr4JNq0Rp+QyLns0ueaz20KwzIPW9R0LH1Vnt4E+XUM29PNseEbf1www2gOuhuDi5AKOIXag9Q==",
++      "license": "MIT"
++    },
++    "node_modules/agent-base": {
++      "version": "6.0.2",
++      "resolved": "https://registry.npmjs.org/agent-base/-/agent-base-6.0.2.tgz",
++      "integrity": "sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ==",
++      "license": "MIT",
++      "dependencies": {
++        "debug": "4"
++      },
++      "engines": {
++        "node": ">= 6.0.0"
++      }
+     },
+     "node_modules/ant-design-vue": {
+       "version": "4.2.6",
+@@ -785,13 +772,14 @@
+       "license": "MIT"
+     },
+     "node_modules/axios": {
+-      "version": "1.15.0",
+-      "resolved": "https://registry.npmjs.org/axios/-/axios-1.15.0.tgz",
+-      "integrity": "sha512-wWyJDlAatxk30ZJer+GeCWS209sA42X+N5jU2jy6oHTp7ufw8uzUTVFBX9+wTfAlhiJXGS0Bq7X6efruWjuK9Q==",
++      "version": "1.20.0",
++      "resolved": "https://registry.npmjs.org/axios/-/axios-1.20.0.tgz",
++      "integrity": "sha512-r8aOh8j9cGKpgQAqpzrUHnSIc6a59Y3Xf/cv8sy1DrHCkZHzQGEuoq1tARk6qSyDdtQGSDgpb9kFlruzPvrgwg==",
+       "license": "MIT",
+       "dependencies": {
+-        "follow-redirects": "^1.15.11",
+-        "form-data": "^4.0.5",
++        "follow-redirects": "^1.16.0",
++        "form-data": "^4.0.6",
++        "https-proxy-agent": "^5.0.1",
+         "proxy-from-env": "^2.1.0"
+       }
+     },
+@@ -899,15 +887,33 @@
+       "license": "MIT"
+     },
+     "node_modules/csstype": {
+-      "version": "3.1.3",
+-      "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.1.3.tgz",
+-      "integrity": "sha512-M1uQkMl8rQK/szD0LNhtqxIPLpimGm8sOBwU7lLnCpSbTyY3yeU1Vc7l4KT5zT4s/yOxHH5O7tIuuLOCnLADRw=="
++      "version": "3.2.3",
++      "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
++      "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
++      "license": "MIT"
+     },
+     "node_modules/dayjs": {
+       "version": "1.11.13",
+       "resolved": "https://registry.npmjs.org/dayjs/-/dayjs-1.11.13.tgz",
+       "integrity": "sha512-oaMBel6gjolK862uaPQOVTA7q3TZhuSvuMQAAglQDOWYO9A91IrAOUJEyKVlqJlHE0vq5p5UXxzdPfMH/x6xNg=="
+     },
++    "node_modules/debug": {
++      "version": "4.4.3",
++      "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
++      "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
++      "license": "MIT",
++      "dependencies": {
++        "ms": "^2.1.3"
++      },
++      "engines": {
++        "node": ">=6.0"
++      },
++      "peerDependenciesMeta": {
++        "supports-color": {
++          "optional": true
++        }
++      }
++    },
+     "node_modules/delayed-stream": {
+       "version": "1.0.0",
+       "resolved": "https://registry.npmjs.org/delayed-stream/-/delayed-stream-1.0.0.tgz",
+@@ -940,10 +946,13 @@
+       "license": "MIT"
+     },
+     "node_modules/dompurify": {
+-      "version": "3.1.7",
+-      "resolved": "https://registry.npmjs.org/dompurify/-/dompurify-3.1.7.tgz",
+-      "integrity": "sha512-VaTstWtsneJY8xzy7DekmYWEOZcmzIe3Qb3zPd4STve1OBTa+e+WmS1ITQec1fZYXI3HCsOZZiSMpG6oxoWMWQ==",
+-      "license": "(MPL-2.0 OR Apache-2.0)"
++      "version": "3.4.16",
++      "resolved": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.16.tgz",
++      "integrity": "sha512-sqo+pNp3qRhCIpbgRi1y8Tgk27Bo2Ry7w0dC1NBeNTdZChWjz9Xb/KOoZbRP/R6pQZ80Qw8YhXw13hWWBbMRnQ==",
++      "license": "(MPL-2.0 OR Apache-2.0)",
++      "optionalDependencies": {
++        "@types/trusted-types": "^2.0.7"
++      }
+     },
+     "node_modules/dunder-proto": {
+       "version": "1.0.1",
+@@ -960,9 +969,10 @@
+       }
+     },
+     "node_modules/entities": {
+-      "version": "4.5.0",
+-      "resolved": "https://registry.npmjs.org/entities/-/entities-4.5.0.tgz",
+-      "integrity": "sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw==",
++      "version": "7.0.1",
++      "resolved": "https://registry.npmjs.org/entities/-/entities-7.0.1.tgz",
++      "integrity": "sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==",
++      "license": "BSD-2-Clause",
+       "engines": {
+         "node": ">=0.12"
+       },
+@@ -989,9 +999,9 @@
+       }
+     },
+     "node_modules/es-object-atoms": {
+-      "version": "1.1.1",
+-      "resolved": "https://registry.npmjs.org/es-object-atoms/-/es-object-atoms-1.1.1.tgz",
+-      "integrity": "sha512-FGgH2h8zKNim9ljj7dankFPcICIK9Cp5bm+c2gQSYePhpaG5+esrLODihIorn+Pe6FGJzWhXQotPv73jTaldXA==",
++      "version": "1.1.2",
++      "resolved": "https://registry.npmjs.org/es-object-atoms/-/es-object-atoms-1.1.2.tgz",
++      "integrity": "sha512-HWcBoN6NileqtSydK2FqHbS/LoDd2pqrnQHLyJzBj4kOp/ky2MWMN694xOfkK8/SnUsW2DH7EfyVlydKCsm1Zw==",
+       "license": "MIT",
+       "dependencies": {
+         "es-errors": "^1.3.0"
+@@ -1018,7 +1028,8 @@
+     "node_modules/estree-walker": {
+       "version": "2.0.2",
+       "resolved": "https://registry.npmjs.org/estree-walker/-/estree-walker-2.0.2.tgz",
+-      "integrity": "sha512-Rfkk/Mp/DL7JVje3u18FxFujQlTNR2q6QfMSMB7AvCBx91NGj/ba3kCfza0f6dVDbw7YlRf/nDrn7pQrCCyQ/w=="
++      "integrity": "sha512-Rfkk/Mp/DL7JVje3u18FxFujQlTNR2q6QfMSMB7AvCBx91NGj/ba3kCfza0f6dVDbw7YlRf/nDrn7pQrCCyQ/w==",
++      "license": "MIT"
+     },
+     "node_modules/fdir": {
+       "version": "6.5.0",
+@@ -1039,9 +1050,9 @@
+       }
+     },
+     "node_modules/follow-redirects": {
+-      "version": "1.15.11",
+-      "resolved": "https://registry.npmjs.org/follow-redirects/-/follow-redirects-1.15.11.tgz",
+-      "integrity": "sha512-deG2P0JfjrTxl50XGCDyfI97ZGVCxIpfKYmfyrQ54n5FO/0gfIES8C/Psl6kWVDolizcaaxZJnTS0QSMxvnsBQ==",
++      "version": "1.16.1",
++      "resolved": "https://registry.npmjs.org/follow-redirects/-/follow-redirects-1.16.1.tgz",
++      "integrity": "sha512-FNvFGzoMLWmE6Yj9spb/zjd7yiNCHiAW9/Tg9CXrQ8wuu32HtlJOwWO11OJafl5FfY3DxTdQ0vj42zU1kvv5jg==",
+       "funding": [
+         {
+           "type": "individual",
+@@ -1059,16 +1070,16 @@
+       }
+     },
+     "node_modules/form-data": {
+-      "version": "4.0.5",
+-      "resolved": "https://registry.npmjs.org/form-data/-/form-data-4.0.5.tgz",
+-      "integrity": "sha512-8RipRLol37bNs2bhoV67fiTEvdTrbMUYcFTiy3+wuuOnUog2QBHCZWXDRijWQfAkhBj2Uf5UnVaiWwA5vdd82w==",
++      "version": "4.0.6",
++      "resolved": "https://registry.npmjs.org/form-data/-/form-data-4.0.6.tgz",
++      "integrity": "sha512-vKatAh4SlVfgbv+YtmhiRjhEMJsYpsG1Y2rMQtR+SVSbytsSD1YGzDIcrAJmdFec88u/+VoGmxnl+80gL1tRCQ==",
+       "license": "MIT",
+       "dependencies": {
+         "asynckit": "^0.4.0",
+         "combined-stream": "^1.0.8",
+         "es-set-tostringtag": "^2.1.0",
+-        "hasown": "^2.0.2",
+-        "mime-types": "^2.1.12"
++        "hasown": "^2.0.4",
++        "mime-types": "^2.1.35"
+       },
+       "engines": {
+         "node": ">= 6"
+@@ -1197,9 +1208,9 @@
+       }
+     },
+     "node_modules/hasown": {
+-      "version": "2.0.2",
+-      "resolved": "https://registry.npmjs.org/hasown/-/hasown-2.0.2.tgz",
+-      "integrity": "sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ==",
++      "version": "2.0.4",
++      "resolved": "https://registry.npmjs.org/hasown/-/hasown-2.0.4.tgz",
++      "integrity": "sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A==",
+       "license": "MIT",
+       "dependencies": {
+         "function-bind": "^1.1.2"
+@@ -1208,6 +1219,19 @@
+         "node": ">= 0.4"
+       }
+     },
++    "node_modules/https-proxy-agent": {
++      "version": "5.0.1",
++      "resolved": "https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-5.0.1.tgz",
++      "integrity": "sha512-dFcAjpTQFgoLMzC2VwU+C/CbS7uRL0lWmxDITmqm7C+7F0Odmj6s9l6alZc6AELXhrnggM2CeWSXHGOdX2YtwA==",
++      "license": "MIT",
++      "dependencies": {
++        "agent-base": "6",
++        "debug": "4"
++      },
++      "engines": {
++        "node": ">= 6"
++      }
++    },
+     "node_modules/i18n-jsautotranslate": {
+       "version": "3.18.0",
+       "resolved": "https://registry.npmmirror.com/i18n-jsautotranslate/-/i18n-jsautotranslate-3.18.0.tgz",
+@@ -1248,9 +1272,9 @@
+       }
+     },
+     "node_modules/lightningcss": {
+-      "version": "1.32.0",
+-      "resolved": "https://registry.npmjs.org/lightningcss/-/lightningcss-1.32.0.tgz",
+-      "integrity": "sha512-NXYBzinNrblfraPGyrbPoD19C1h9lfI/1mzgWYvXUTe414Gz/X1FD2XBZSZM7rRTrMA8JL3OtAaGifrIKhQ5yQ==",
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss/-/lightningcss-1.33.0.tgz",
++      "integrity": "sha512-WkUDrojuJs0xkgGf2udWxa3yGBRxPtxUkB79i6aCZLRgc7PM8fZe9TosfPDcvEpQZbuFASnHYmRLBLUbmLOIIA==",
+       "dev": true,
+       "license": "MPL-2.0",
+       "dependencies": {
+@@ -1264,23 +1288,23 @@
+         "url": "https://opencollective.com/parcel"
+       },
+       "optionalDependencies": {
+-        "lightningcss-android-arm64": "1.32.0",
+-        "lightningcss-darwin-arm64": "1.32.0",
+-        "lightningcss-darwin-x64": "1.32.0",
+-        "lightningcss-freebsd-x64": "1.32.0",
+-        "lightningcss-linux-arm-gnueabihf": "1.32.0",
+-        "lightningcss-linux-arm64-gnu": "1.32.0",
+-        "lightningcss-linux-arm64-musl": "1.32.0",
+-        "lightningcss-linux-x64-gnu": "1.32.0",
+-        "lightningcss-linux-x64-musl": "1.32.0",
+-        "lightningcss-win32-arm64-msvc": "1.32.0",
+-        "lightningcss-win32-x64-msvc": "1.32.0"
++        "lightningcss-android-arm64": "1.33.0",
++        "lightningcss-darwin-arm64": "1.33.0",
++        "lightningcss-darwin-x64": "1.33.0",
++        "lightningcss-freebsd-x64": "1.33.0",
++        "lightningcss-linux-arm-gnueabihf": "1.33.0",
++        "lightningcss-linux-arm64-gnu": "1.33.0",
++        "lightningcss-linux-arm64-musl": "1.33.0",
++        "lightningcss-linux-x64-gnu": "1.33.0",
++        "lightningcss-linux-x64-musl": "1.33.0",
++        "lightningcss-win32-arm64-msvc": "1.33.0",
++        "lightningcss-win32-x64-msvc": "1.33.0"
+       }
+     },
+     "node_modules/lightningcss-android-arm64": {
+-      "version": "1.32.0",
+-      "resolved": "https://registry.npmjs.org/lightningcss-android-arm64/-/lightningcss-android-arm64-1.32.0.tgz",
+-      "integrity": "sha512-YK7/ClTt4kAK0vo6w3X+Pnm0D2cf2vPHbhOXdoNti1Ga0al1P4TBZhwjATvjNwLEBCnKvjJc2jQgHXH0NEwlAg==",
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-android-arm64/-/lightningcss-android-arm64-1.33.0.tgz",
++      "integrity": "sha512-gEpRTalKdosp4Bb8qWtc2iOgE5SeIHlpS1up9bFq2wAyYhl1UdTObYiHe98zEM9SQvSoqQZ1IQD0JNpg3Ml5pg==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -1299,9 +1323,9 @@
+       }
+     },
+     "node_modules/lightningcss-darwin-arm64": {
+-      "version": "1.32.0",
+-      "resolved": "https://registry.npmjs.org/lightningcss-darwin-arm64/-/lightningcss-darwin-arm64-1.32.0.tgz",
+-      "integrity": "sha512-RzeG9Ju5bag2Bv1/lwlVJvBE3q6TtXskdZLLCyfg5pt+HLz9BqlICO7LZM7VHNTTn/5PRhHFBSjk5lc4cmscPQ==",
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-darwin-arm64/-/lightningcss-darwin-arm64-1.33.0.tgz",
++      "integrity": "sha512-Sciaz8eenNTKn9b3t7+xr0ipTp9YxKQY4npwQ3mrRuL0BAVHBLyZxofhaKBAVtzmtRZ/zTyo0/to4B1uWG/Djg==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -1320,9 +1344,9 @@
+       }
+     },
+     "node_modules/lightningcss-darwin-x64": {
+-      "version": "1.32.0",
+-      "resolved": "https://registry.npmjs.org/lightningcss-darwin-x64/-/lightningcss-darwin-x64-1.32.0.tgz",
+-      "integrity": "sha512-U+QsBp2m/s2wqpUYT/6wnlagdZbtZdndSmut/NJqlCcMLTWp5muCrID+K5UJ6jqD2BFshejCYXniPDbNh73V8w==",
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-darwin-x64/-/lightningcss-darwin-x64-1.33.0.tgz",
++      "integrity": "sha512-Z5UPAxzrjlWNNyGy6i65cJzzvgJ5D3T6wMvs+gWpY9d7qRhANrxqAp6LhxIgZhWEw18RfJTGcRxjuLIBr+m8XQ==",
+       "cpu": [
+         "x64"
+       ],
+@@ -1341,9 +1365,9 @@
+       }
+     },
+     "node_modules/lightningcss-freebsd-x64": {
+-      "version": "1.32.0",
+-      "resolved": "https://registry.npmjs.org/lightningcss-freebsd-x64/-/lightningcss-freebsd-x64-1.32.0.tgz",
+-      "integrity": "sha512-JCTigedEksZk3tHTTthnMdVfGf61Fky8Ji2E4YjUTEQX14xiy/lTzXnu1vwiZe3bYe0q+SpsSH/CTeDXK6WHig==",
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-freebsd-x64/-/lightningcss-freebsd-x64-1.33.0.tgz",
++      "integrity": "sha512-QQM/Ti/hQajJwCY+RiWuCZ9sdtI/XQk7nDK5vC8kkdwixezOlDgvDx7+RT+QjK6FcFT4MpsuoBnHIo/O3StRRg==",
+       "cpu": [
+         "x64"
+       ],
+@@ -1362,9 +1386,9 @@
+       }
+     },
+     "node_modules/lightningcss-linux-arm-gnueabihf": {
+-      "version": "1.32.0",
+-      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm-gnueabihf/-/lightningcss-linux-arm-gnueabihf-1.32.0.tgz",
+-      "integrity": "sha512-x6rnnpRa2GL0zQOkt6rts3YDPzduLpWvwAF6EMhXFVZXD4tPrBkEFqzGowzCsIWsPjqSK+tyNEODUBXeeVHSkw==",
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm-gnueabihf/-/lightningcss-linux-arm-gnueabihf-1.33.0.tgz",
++      "integrity": "sha512-N7FVBe6iS24MlM6R/4RBTxGhQheZGs7tiQ9U32UtF75NzP5Q7xWPRqLBCKxlRQRk3rY1jCIPLzx7WzOhuUIRLQ==",
+       "cpu": [
+         "arm"
+       ],
+@@ -1383,13 +1407,16 @@
+       }
+     },
+     "node_modules/lightningcss-linux-arm64-gnu": {
+-      "version": "1.32.0",
+-      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-gnu/-/lightningcss-linux-arm64-gnu-1.32.0.tgz",
+-      "integrity": "sha512-0nnMyoyOLRJXfbMOilaSRcLH3Jw5z9HDNGfT/gwCPgaDjnx0i8w7vBzFLFR1f6CMLKF8gVbebmkUN3fa/kQJpQ==",
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-gnu/-/lightningcss-linux-arm64-gnu-1.33.0.tgz",
++      "integrity": "sha512-j2v/itmy4HlNxlc6voKXYgBqNi0Ng2LShg4z7GufpEgs05P+2suBVyi9I6YHq5uoVFx9ETin3eCEhLVyXGQnKg==",
+       "cpu": [
+         "arm64"
+       ],
+       "dev": true,
++      "libc": [
++        "glibc"
++      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -1404,13 +1431,16 @@
+       }
+     },
+     "node_modules/lightningcss-linux-arm64-musl": {
+-      "version": "1.32.0",
+-      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-musl/-/lightningcss-linux-arm64-musl-1.32.0.tgz",
+-      "integrity": "sha512-UpQkoenr4UJEzgVIYpI80lDFvRmPVg6oqboNHfoH4CQIfNA+HOrZ7Mo7KZP02dC6LjghPQJeBsvXhJod/wnIBg==",
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-musl/-/lightningcss-linux-arm64-musl-1.33.0.tgz",
++      "integrity": "sha512-yiO5ROMuYQgXbC60yjZU5CYSFZGKXL0HFATXt9mHJn1+zW55oCtMI9NfcVhYLMFDL7gV7oBPon/EmMMGg2OvtQ==",
+       "cpu": [
+         "arm64"
+       ],
+       "dev": true,
++      "libc": [
++        "musl"
++      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -1425,13 +1455,16 @@
+       }
+     },
+     "node_modules/lightningcss-linux-x64-gnu": {
+-      "version": "1.32.0",
+-      "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-gnu/-/lightningcss-linux-x64-gnu-1.32.0.tgz",
+-      "integrity": "sha512-V7Qr52IhZmdKPVr+Vtw8o+WLsQJYCTd8loIfpDaMRWGUZfBOYEJeyJIkqGIDMZPwPx24pUMfwSxxI8phr/MbOA==",
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-gnu/-/lightningcss-linux-x64-gnu-1.33.0.tgz",
++      "integrity": "sha512-ar+Ju7LmcN0Jo4FpL4hpFybwNG9/3A/Br5KW2n2jyODg3MEZXaDYADdemoNS+BDNfMgKvylJLj4S5tyRActuAg==",
+       "cpu": [
+         "x64"
+       ],
+       "dev": true,
++      "libc": [
++        "glibc"
++      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -1446,13 +1479,16 @@
+       }
+     },
+     "node_modules/lightningcss-linux-x64-musl": {
+-      "version": "1.32.0",
+-      "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-musl/-/lightningcss-linux-x64-musl-1.32.0.tgz",
+-      "integrity": "sha512-bYcLp+Vb0awsiXg/80uCRezCYHNg1/l3mt0gzHnWV9XP1W5sKa5/TCdGWaR/zBM2PeF/HbsQv/j2URNOiVuxWg==",
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-musl/-/lightningcss-linux-x64-musl-1.33.0.tgz",
++      "integrity": "sha512-RYiYbkokw0trfKqqzfF55lginwEPrD3OJDfTuJzFs1MK6iFnDenaz1fqLLtX4ITG3OktJQXOeTaw1awrBAlZPw==",
+       "cpu": [
+         "x64"
+       ],
+       "dev": true,
++      "libc": [
++        "musl"
++      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -1467,9 +1503,9 @@
+       }
+     },
+     "node_modules/lightningcss-win32-arm64-msvc": {
+-      "version": "1.32.0",
+-      "resolved": "https://registry.npmjs.org/lightningcss-win32-arm64-msvc/-/lightningcss-win32-arm64-msvc-1.32.0.tgz",
+-      "integrity": "sha512-8SbC8BR40pS6baCM8sbtYDSwEVQd4JlFTOlaD3gWGHfThTcABnNDBda6eTZeqbofalIJhFx0qKzgHJmcPTnGdw==",
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-win32-arm64-msvc/-/lightningcss-win32-arm64-msvc-1.33.0.tgz",
++      "integrity": "sha512-1K+MPfLSFVpphzpdbfkhlWk6wBrTObBzS2T6db10PNOZgR9GoVsAWzwNyuhUYYbTp23j+4RrncfujZ4uAzXvwA==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -1488,9 +1524,9 @@
+       }
+     },
+     "node_modules/lightningcss-win32-x64-msvc": {
+-      "version": "1.32.0",
+-      "resolved": "https://registry.npmjs.org/lightningcss-win32-x64-msvc/-/lightningcss-win32-x64-msvc-1.32.0.tgz",
+-      "integrity": "sha512-Amq9B/SoZYdDi1kFrojnoqPLxYhQ4Wo5XiL8EVJrVsB8ARoC1PWW6VGtT0WKCemjy8aC+louJnjS7U18x3b06Q==",
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-win32-x64-msvc/-/lightningcss-win32-x64-msvc-1.33.0.tgz",
++      "integrity": "sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA==",
+       "cpu": [
+         "x64"
+       ],
+@@ -1509,15 +1545,15 @@
+       }
+     },
+     "node_modules/lodash": {
+-      "version": "4.17.21",
+-      "resolved": "https://registry.npmmirror.com/lodash/-/lodash-4.17.21.tgz",
+-      "integrity": "sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==",
++      "version": "4.18.1",
++      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.18.1.tgz",
++      "integrity": "sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q==",
+       "license": "MIT"
+     },
+     "node_modules/lodash-es": {
+-      "version": "4.17.21",
+-      "resolved": "https://registry.npmmirror.com/lodash-es/-/lodash-es-4.17.21.tgz",
+-      "integrity": "sha512-mKnC+QJ9pWVzv+C4/U3rRsHapFfHvQFoFB92e52xeyGMcX6/OlIl78je1u8vePzYZSkkogMPJ2yjxxsb89cxyw==",
++      "version": "4.18.1",
++      "resolved": "https://registry.npmjs.org/lodash-es/-/lodash-es-4.18.1.tgz",
++      "integrity": "sha512-J8xewKD/Gk22OZbhpOVSwcs60zhd95ESDwezOFuA3/099925PdHJ7OFHNTGtajL3AlZkykD32HykiMo+BIBI8A==",
+       "license": "MIT"
+     },
+     "node_modules/loose-envify": {
+@@ -1533,11 +1569,12 @@
+       }
+     },
+     "node_modules/magic-string": {
+-      "version": "0.30.17",
+-      "resolved": "https://registry.npmjs.org/magic-string/-/magic-string-0.30.17.tgz",
+-      "integrity": "sha512-sNPKHvyjVf7gyjwS4xGTaW/mCnF8wnjtifKBEhxfZ7E/S8tQ0rssrwGNn6q8JH/ohItJfSQp9mBtQYuTlH5QnA==",
++      "version": "0.30.21",
++      "resolved": "https://registry.npmjs.org/magic-string/-/magic-string-0.30.21.tgz",
++      "integrity": "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==",
++      "license": "MIT",
+       "dependencies": {
+-        "@jridgewell/sourcemap-codec": "^1.5.0"
++        "@jridgewell/sourcemap-codec": "^1.5.5"
+       }
+     },
+     "node_modules/marked": {
+@@ -1592,16 +1629,23 @@
+         "marked": "14.0.0"
+       }
+     },
++    "node_modules/ms": {
++      "version": "2.1.3",
++      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
++      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
++      "license": "MIT"
++    },
+     "node_modules/nanoid": {
+-      "version": "3.3.11",
+-      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.11.tgz",
+-      "integrity": "sha512-N8SpfPUnUp1bK+PMYW8qSWdl9U+wwNWI4QKxOYDy9JAro3WMX7p2OeVRF9v+347pnakNevPmiHhNmZ2HbFA76w==",
++      "version": "3.3.20",
++      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.20.tgz",
++      "integrity": "sha512-uKdg2G3GNCKQn9byYOpxbGqrT2fGO5KRt5J/8b3pok8rT6qxGWF6hxMyJiEYtAf+FVyYuD9hRaDqX5uPFYJ4ZQ==",
+       "funding": [
+         {
+           "type": "github",
+           "url": "https://github.com/sponsors/ai"
+         }
+       ],
++      "license": "MIT",
+       "bin": {
+         "nanoid": "bin/nanoid.cjs"
+       },
+@@ -1626,9 +1670,9 @@
+       "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="
+     },
+     "node_modules/picomatch": {
+-      "version": "4.0.4",
+-      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.4.tgz",
+-      "integrity": "sha512-QP88BAKvMam/3NxH6vj2o21R6MjxZUAd6nlwAS/pnGvN9IVLocLHxGYIzFhg6fUQ+5th6P4dv4eW9jX3DSIj7A==",
++      "version": "4.0.7",
++      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz",
++      "integrity": "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==",
+       "dev": true,
+       "license": "MIT",
+       "engines": {
+@@ -1639,9 +1683,9 @@
+       }
+     },
+     "node_modules/postcss": {
+-      "version": "8.5.9",
+-      "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.9.tgz",
+-      "integrity": "sha512-7a70Nsot+EMX9fFU3064K/kdHWZqGVY+BADLyXc8Dfv+mTLLVl6JzJpPaCZ2kQL9gIJvKXSLMHhqdRRjwQeFtw==",
++      "version": "8.5.29",
++      "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.29.tgz",
++      "integrity": "sha512-49cGhUbXj8Qenv0iTMxA1cFBzxXoctpC9Ujd77t1WcbJIr6nF/eI7g/8MgxrYldFRuAXvja7xQRwavoW7kgrxQ==",
+       "funding": [
+         {
+           "type": "opencollective",
+@@ -1658,9 +1702,9 @@
+       ],
+       "license": "MIT",
+       "dependencies": {
+-        "nanoid": "^3.3.11",
++        "nanoid": "^3.3.19",
+         "picocolors": "^1.1.1",
+-        "source-map-js": "^1.2.1"
++        "source-map-js": "^1.2.2"
+       },
+       "engines": {
+         "node": "^10 || ^12 || >=14"
+@@ -1681,14 +1725,14 @@
+       "integrity": "sha512-LwZrotdHOo12nQuZlHEmtuXdqGoOD0OhaxopaNFxWzInpEgaLWoVuAMbTzixuosCx2nEG58ngzW3vxdWoxIgdg=="
+     },
+     "node_modules/rolldown": {
+-      "version": "1.0.0-rc.15",
+-      "resolved": "https://registry.npmjs.org/rolldown/-/rolldown-1.0.0-rc.15.tgz",
+-      "integrity": "sha512-Ff31guA5zT6WjnGp0SXw76X6hzGRk/OQq2hE+1lcDe+lJdHSgnSX6nK3erbONHyCbpSj9a9E+uX/OvytZoWp2g==",
++      "version": "1.2.13",
++      "resolved": "https://registry.npmjs.org/rolldown/-/rolldown-1.2.13.tgz",
++      "integrity": "sha512-/5apOkwWxtACcQtZ5WlrAsKS4JwXVThQPJZ3RqIruRY9UG9M8e0VlXN068xum/JRKA4aIUoJ13ghe/kGCvidiQ==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@oxc-project/types": "=0.124.0",
+-        "@rolldown/pluginutils": "1.0.0-rc.15"
++        "@oxc-project/types": "=0.153.0",
++        "@rolldown/pluginutils": "^1.0.0"
+       },
+       "bin": {
+         "rolldown": "bin/cli.mjs"
+@@ -1697,21 +1741,21 @@
+         "node": "^20.19.0 || >=22.12.0"
+       },
+       "optionalDependencies": {
+-        "@rolldown/binding-android-arm64": "1.0.0-rc.15",
+-        "@rolldown/binding-darwin-arm64": "1.0.0-rc.15",
+-        "@rolldown/binding-darwin-x64": "1.0.0-rc.15",
+-        "@rolldown/binding-freebsd-x64": "1.0.0-rc.15",
+-        "@rolldown/binding-linux-arm-gnueabihf": "1.0.0-rc.15",
+-        "@rolldown/binding-linux-arm64-gnu": "1.0.0-rc.15",
+-        "@rolldown/binding-linux-arm64-musl": "1.0.0-rc.15",
+-        "@rolldown/binding-linux-ppc64-gnu": "1.0.0-rc.15",
+-        "@rolldown/binding-linux-s390x-gnu": "1.0.0-rc.15",
+-        "@rolldown/binding-linux-x64-gnu": "1.0.0-rc.15",
+-        "@rolldown/binding-linux-x64-musl": "1.0.0-rc.15",
+-        "@rolldown/binding-openharmony-arm64": "1.0.0-rc.15",
+-        "@rolldown/binding-wasm32-wasi": "1.0.0-rc.15",
+-        "@rolldown/binding-win32-arm64-msvc": "1.0.0-rc.15",
+-        "@rolldown/binding-win32-x64-msvc": "1.0.0-rc.15"
++        "@rolldown/binding-android-arm-eabi": "1.2.13",
++        "@rolldown/binding-android-arm64": "1.2.13",
++        "@rolldown/binding-darwin-arm64": "1.2.13",
++        "@rolldown/binding-darwin-x64": "1.2.13",
++        "@rolldown/binding-freebsd-x64": "1.2.13",
++        "@rolldown/binding-linux-arm-gnueabihf": "1.2.13",
++        "@rolldown/binding-linux-arm64-gnu": "1.2.13",
++        "@rolldown/binding-linux-arm64-musl": "1.2.13",
++        "@rolldown/binding-linux-ppc64-gnu": "1.2.13",
++        "@rolldown/binding-linux-s390x-gnu": "1.2.13",
++        "@rolldown/binding-linux-x64-gnu": "1.2.13",
++        "@rolldown/binding-linux-x64-musl": "1.2.13",
++        "@rolldown/binding-openharmony-arm64": "1.2.13",
++        "@rolldown/binding-win32-arm64-msvc": "1.2.13",
++        "@rolldown/binding-win32-x64-msvc": "1.2.13"
+       }
+     },
+     "node_modules/scroll-into-view-if-needed": {
+@@ -1737,9 +1781,10 @@
+       }
+     },
+     "node_modules/source-map-js": {
+-      "version": "1.2.1",
+-      "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz",
+-      "integrity": "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==",
++      "version": "1.2.2",
++      "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.2.tgz",
++      "integrity": "sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==",
++      "license": "BSD-3-Clause",
+       "engines": {
+         "node": ">=0.10.0"
+       }
+@@ -1766,9 +1811,9 @@
+       }
+     },
+     "node_modules/tinyglobby": {
+-      "version": "0.2.16",
+-      "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.16.tgz",
+-      "integrity": "sha512-pn99VhoACYR8nFHhxqix+uvsbXineAasWm5ojXoN8xEwK5Kd3/TrhNn1wByuD52UxWRLy8pu+kRMniEi6Eq9Zg==",
++      "version": "0.2.17",
++      "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.17.tgz",
++      "integrity": "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+@@ -1782,14 +1827,6 @@
+         "url": "https://github.com/sponsors/SuperchupuDev"
+       }
+     },
+-    "node_modules/tslib": {
+-      "version": "2.8.1",
+-      "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
+-      "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
+-      "dev": true,
+-      "license": "0BSD",
+-      "optional": true
+-    },
+     "node_modules/typescript": {
+       "version": "4.9.5",
+       "resolved": "https://registry.npmjs.org/typescript/-/typescript-4.9.5.tgz",
+@@ -1814,17 +1851,17 @@
+       }
+     },
+     "node_modules/vite": {
+-      "version": "8.0.8",
+-      "resolved": "https://registry.npmjs.org/vite/-/vite-8.0.8.tgz",
+-      "integrity": "sha512-dbU7/iLVa8KZALJyLOBOQ88nOXtNG8vxKuOT4I2mD+Ya70KPceF4IAmDsmU0h1Qsn5bPrvsY9HJstCRh3hG6Uw==",
++      "version": "8.3.4",
++      "resolved": "https://registry.npmjs.org/vite/-/vite-8.3.4.tgz",
++      "integrity": "sha512-IftLE8phJhdNRIGNEV4JCCvfNScoZQVfcXaN8TQropWGJtOHcu+iAB9pHcuGvmEb/kddw0LBe/jS8ztdC6xdiQ==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "lightningcss": "^1.32.0",
+-        "picomatch": "^4.0.4",
+-        "postcss": "^8.5.8",
+-        "rolldown": "1.0.0-rc.15",
+-        "tinyglobby": "^0.2.15"
++        "lightningcss": "^1.33.0",
++        "picomatch": "^4.0.7",
++        "postcss": "^8.5.29",
++        "rolldown": "~1.2.12",
++        "tinyglobby": "^0.2.17"
+       },
+       "bin": {
+         "vite": "bin/vite.js"
+@@ -1840,7 +1877,7 @@
+       },
+       "peerDependencies": {
+         "@types/node": "^20.19.0 || >=22.12.0",
+-        "@vitejs/devtools": "^0.1.0",
++        "@vitejs/devtools": "^0.7.1",
+         "esbuild": "^0.27.0 || ^0.28.0",
+         "jiti": ">=1.21.0",
+         "less": "^4.0.0",
+@@ -1902,16 +1939,16 @@
+       }
+     },
+     "node_modules/vue": {
+-      "version": "3.5.14",
+-      "resolved": "https://registry.npmmirror.com/vue/-/vue-3.5.14.tgz",
+-      "integrity": "sha512-LbOm50/vZFG6Mhy6KscQYXZMQ0LMCC/y40HDJPPvGFQ+i/lUH+PJHR6C3assgOQiXdl6tAfsXHbXYVBZZu65ew==",
++      "version": "3.5.43",
++      "resolved": "https://registry.npmjs.org/vue/-/vue-3.5.43.tgz",
++      "integrity": "sha512-o5qZoksdnjIKvW1srZ3ab7pcDNYAerBjRe54D0LBLfRdCYFrSgBHVXokMas35czQc0//lmx4/tuY4ZNQ+Rf2Ng==",
+       "license": "MIT",
+       "dependencies": {
+-        "@vue/compiler-dom": "3.5.14",
+-        "@vue/compiler-sfc": "3.5.14",
+-        "@vue/runtime-dom": "3.5.14",
+-        "@vue/server-renderer": "3.5.14",
+-        "@vue/shared": "3.5.14"
++        "@vue/compiler-dom": "3.5.43",
++        "@vue/compiler-sfc": "3.5.43",
++        "@vue/runtime-dom": "3.5.43",
++        "@vue/server-renderer": "3.5.43",
++        "@vue/shared": "3.5.43"
+       },
+       "peerDependencies": {
+         "typescript": "*"
+diff --git a/web_ui/package.json b/web_ui/package.json
+index 3fef9a22f2522b611e22dfab5e11fa61bb00cbd2..3f5b5b82f95fa06c9637fd362f78ab7246f65e22 100644
+--- a/web_ui/package.json
++++ b/web_ui/package.json
+@@ -2,6 +2,9 @@
+   "name": "web-ui",
+   "version": "1.0.0",
+   "private": true,
++  "overrides": {
++    "dompurify": "3.4.16"
++  },
+   "scripts": {
+     "dev": "vite",
+     "build": "vite build  --mode production",
+@@ -19,7 +22,7 @@
+     "vue-router": "^4.0.0"
+   },
+   "devDependencies": {
+-    "@vitejs/plugin-vue": "^2.0.0",
++    "@vitejs/plugin-vue": "^6.0.10",
+     "fs-extra": "^11.2.0",
+     "typescript": "^4.5.0",
+     "vite": "^8.0.8",
+diff --git a/web_ui/src/api/auth.ts b/web_ui/src/api/auth.ts
+index 2e13705567aff23b4db31832f522a241d5de455e..6774887c1985a7cd2657a77ebb8d32ad5a325fda 100644
+--- a/web_ui/src/api/auth.ts
++++ b/web_ui/src/api/auth.ts
+@@ -1,5 +1,4 @@
+ import http from './http'
+-import axios from 'axios'
+ import { Message } from '@arco-design/web-vue'
+ export interface LoginParams {
+   username: string
+@@ -43,7 +42,7 @@ export const QRCode = () => {
+     qrCodeCounter = 0;
+     
+     http.get('/wx/auth/qr/code').then(res => {
+-      const maxAttempts = 500;
++      const maxAttempts = 60;
+       qrCodeIntervalId = setInterval(() => {
+         qrCodeCounter++;
+         if(qrCodeCounter > maxAttempts) {
+@@ -52,11 +51,15 @@ export const QRCode = () => {
+           reject(new Error('获取二维码超时'));
+           return;
+         }
+-        axios.head(res?.code).then(response => {
+-          if(response.status==200){
+-            console.log(response)
++        http.get('/wx/auth/qr/status').then((response: any) => {
++          if (response?.error) {
+             clearInterval(qrCodeIntervalId);
+-            resolve(res)
++            qrCodeIntervalId = 0;
++            reject(new Error(response.error));
++          } else if(response?.qr_code === true && !response?.generating){
++            clearInterval(qrCodeIntervalId);
++            qrCodeIntervalId = 0;
++            resolve({ ...res, code: response.code || res?.code })
+           }
+         }).catch(err => {
+           if(qrCodeCounter >= maxAttempts) {
+@@ -73,7 +76,7 @@ export const checkQRCodeStatus = () => {
+   return new Promise((resolve, reject) => {
+      if (interval_status_Id) {
+       clearInterval(interval_status_Id);
+-      qrCodeIntervalId = 0;
++      interval_status_Id = 0;
+     }
+       interval_status_Id = setInterval(() => {
+         http.get("wx/auth/qr/status").then(response => {
+@@ -81,18 +84,25 @@ export const checkQRCodeStatus = () => {
+             Message.success("授权成功")
+             clearInterval(interval_status_Id)
+             resolve(response)
+-          } else if(response?.qr_code===false){
++          } else if(response?.error || (response?.qr_code===false && !response?.generating)){
+             Message.error("二维码已失效，请重新获取")
+             clearInterval(interval_status_Id)
+-            reject(new Error('二维码已失效'))
++            reject(new Error(response?.error || '二维码已失效'))
+           }
+         }).catch(err => {
+-          // clearInterval(intervalId)
+-          // reject(err)
++          clearInterval(interval_status_Id)
++          reject(err)
+         })
+       }, 3000)
+   })
+ }
++export const cancelQRCodePolling = () => {
++  clearInterval(qrCodeIntervalId)
++  clearInterval(interval_status_Id)
++  qrCodeIntervalId = 0
++  interval_status_Id = 0
++}
++
+ export const refreshToken = () => {
+   return http.post<LoginResult>('/wx/auth/refresh')
+ }
+@@ -123,4 +133,4 @@ export const requestResetCode = (data: RequestResetCodeParams) => {
+ 
+ export const resetPassword = (data: ResetPasswordParams) => {
+   return http.post('/wx/auth/password/reset', data)
+-}
+\ No newline at end of file
++}
+diff --git a/web_ui/src/components/WechatAuthQrcode.vue b/web_ui/src/components/WechatAuthQrcode.vue
+index b5d695d1f47863ed61127b82379ca827109017db..9341615ebb0b18f8f1d81b101ebac5c8fed72049 100644
+--- a/web_ui/src/components/WechatAuthQrcode.vue
++++ b/web_ui/src/components/WechatAuthQrcode.vue
+@@ -32,9 +32,8 @@
+ </template>
+ 
+ <script lang="ts" setup>
+-import { ref } from 'vue'
+-import { QRCode, checkQRCodeStatus } from '@/api/auth'
+-import { Message } from '@arco-design/web-vue'
++import { ref, onBeforeUnmount } from 'vue'
++import { QRCode, checkQRCodeStatus, cancelQRCodePolling } from '@/api/auth'
+ 
+ const emit = defineEmits(['success', 'error'])
+ 
+@@ -43,21 +42,26 @@ const loading = ref(false)
+ const qrcodeUrl = ref('')
+ const errorMessage = ref('')
+ 
+-let checkStatusTimer: number | null = null
++let authAttempt = 0
+ 
+ const startAuth = async () => {
++  clearTimer()
++  const attempt = authAttempt
+   try {
+     visible.value = true
+     loading.value = true
++    qrcodeUrl.value = ''
+     errorMessage.value = ''
+     
+     // 获取二维码
+     const res = await QRCode()
++    if (attempt !== authAttempt) return
+     qrcodeUrl.value = res?.code
+     loading.value = false
+ 
+     // 开始检查授权状态
+         checkQRCodeStatus().then((statusRes) => {
++          if (attempt !== authAttempt) return
+           if (statusRes?.login_status) {
+             clearTimer()
+             // Message.success('授权成功')
+@@ -65,25 +69,27 @@ const startAuth = async () => {
+             visible.value = false
+           }
+         }).catch((err) => {
++          if (attempt !== authAttempt) return
+           console.error('检查二维码状态失败:', err)
+-          errorMessage.value = '授权失败，请重试'
+-          visible.value = false
++          errorMessage.value = err?.message || '授权失败，请重试'
++          qrcodeUrl.value = ''
+            emit('error', err)
+         })
+   } catch (err) {
++    if (attempt !== authAttempt) return
+     loading.value = false
+-    errorMessage.value = '获取二维码失败，请重试'
++    errorMessage.value = err instanceof Error ? err.message : '获取二维码失败，请重试'
+     emit('error', err)
+   }
+ }
+ 
+ const clearTimer = () => {
+-  if (checkStatusTimer) {
+-    clearInterval(checkStatusTimer)
+-    checkStatusTimer = null
+-  }
++  authAttempt++
++  cancelQRCodePolling()
+ }
+ 
++onBeforeUnmount(clearTimer)
++
+ defineExpose({
+   startAuth
+ })
+@@ -110,4 +116,4 @@ defineExpose({
+   width: 200px;
+   height: 200px;
+ }
+-</style>
+\ No newline at end of file
++</style>
+diff --git a/web_ui/src/main.ts b/web_ui/src/main.ts
+index d81c74f68927d4b1624af8e3a61c7eafa6f053a5..27702f7d36a37d7d31762144ae7646f05786ce75 100644
+--- a/web_ui/src/main.ts
++++ b/web_ui/src/main.ts
+@@ -5,7 +5,6 @@ import router from './router'
+ // 导入 ArcoDesign
+ import ArcoVue from '@arco-design/web-vue'
+ // 导入 ArcoDesign 图标
+-import { createApp } from 'vue';
+ import ArcoVueIcon from '@arco-design/web-vue/es/icon'; // 关键步骤
+ // 导入 ArcoDesign 样式
+ import '@arco-design/web-vue/dist/arco.css'
+@@ -19,4 +18,4 @@ app.use(ArcoVueIcon)
+ // 注册路由
+ app.use(router)
+ 
+-app.mount('#app')
+\ No newline at end of file
++app.mount('#app')
+diff --git a/web_ui/yarn.lock b/web_ui/yarn.lock
+index acad5c1221993f6cef5568905dee2dcd02d11bd2..65dc3b3989a31aa5368359e394a8370d17d6e0b8 100644
+--- a/web_ui/yarn.lock
++++ b/web_ui/yarn.lock
+@@ -44,99 +44,99 @@
+     scroll-into-view-if-needed "^2.2.31"
+     vue "^3.1.0"
+ 
+-"@babel/helper-string-parser@^7.27.1":
+-  version "7.27.1"
+-  resolved "https://registry.npmjs.org/@babel/helper-string-parser/-/helper-string-parser-7.27.1.tgz"
+-  integrity sha512-qMlSxKbpRlAridDExk92nSobyDdpPijUq2DW6oDnUqd0iOGxmQjyqhMIihI9+zv4LPyZdRje2cavWPbCbWm3eA==
+-
+-"@babel/helper-validator-identifier@^7.27.1":
+-  version "7.27.1"
+-  resolved "https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-7.27.1.tgz"
+-  integrity sha512-D2hP9eA+Sqx1kBZgzxZh0y1trbuU+JoDkiEwqhQ36nodYqJwyEIhPSdMNd7lOm/4io72luTPWH20Yda0xOuUow==
+-
+-"@babel/parser@^7.27.2":
+-  version "7.27.3"
+-  resolved "https://registry.npmjs.org/@babel/parser/-/parser-7.27.3.tgz"
+-  integrity sha512-xyYxRj6+tLNDTWi0KCBcZ9V7yg3/lwL9DWh9Uwh/RIVlIfFidggcgxKX3GCXwCiswwcGRawBKbEg2LG/Y8eJhw==
++"@babel/helper-string-parser@^7.29.7":
++  version "7.29.7"
++  resolved "https://registry.npmjs.org/@babel/helper-string-parser/-/helper-string-parser-7.29.7.tgz"
++  integrity sha512-Pb5ijPrZ89GDH8223L4UP8i6QApWxs04RbPQJTeWDV0/keR2E36MeKnyr6LYmUUvqRRI+Iv87SuF1W6ErINzYw==
++
++"@babel/helper-validator-identifier@^7.29.7":
++  version "7.29.7"
++  resolved "https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-7.29.7.tgz"
++  integrity sha512-qehxGkRj55h/ff8EMaJ+cYhyaKlHIxqYDn682wQD7RNp9UujOQsHog2uS0r2vzr4pW+sXf90NeeayjcNaX3fFg==
++
++"@babel/parser@^7.29.8":
++  version "7.29.9"
++  resolved "https://registry.npmjs.org/@babel/parser/-/parser-7.29.9.tgz"
++  integrity sha512-CjXrNHTnvqBVqHgdBysY3vk2T8tpJHb5/RMeHJBTyVa9xgugCB0CJTx/3oO8RV2QRQP391RWpB7D6hLjm8V9uA==
+   dependencies:
+-    "@babel/types" "^7.27.3"
++    "@babel/types" "^7.29.8"
+ 
+ "@babel/runtime@^7.10.5":
+   version "7.28.4"
+   resolved "https://registry.npmmirror.com/@babel/runtime/-/runtime-7.28.4.tgz"
+   integrity sha512-Q/N6JNWvIvPnLDvjlE1OUBLPQHH6l3CltCEsHIujp45zQUSSh8K+gHnaEX45yAT1nyngnINhvWtzN+Nb9D8RAQ==
+ 
+-"@babel/types@^7.27.3":
+-  version "7.27.3"
+-  resolved "https://registry.npmjs.org/@babel/types/-/types-7.27.3.tgz"
+-  integrity sha512-Y1GkI4ktrtvmawoSq+4FCVHNryea6uR+qUQy0AGxLSsjCX0nVmkYQMBLHDkXZuo5hGx7eYdnIaslsdBFm7zbUw==
++"@babel/types@^7.29.8":
++  version "7.29.8"
++  resolved "https://registry.npmjs.org/@babel/types/-/types-7.29.8.tgz"
++  integrity sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg==
+   dependencies:
+-    "@babel/helper-string-parser" "^7.27.1"
+-    "@babel/helper-validator-identifier" "^7.27.1"
++    "@babel/helper-string-parser" "^7.29.7"
++    "@babel/helper-validator-identifier" "^7.29.7"
+ 
+ "@codemirror/autocomplete@^6.0.0":
+-  version "6.19.1"
+-  resolved "https://registry.npmmirror.com/@codemirror/autocomplete/-/autocomplete-6.19.1.tgz#355e49c9fd275b42a6e16e9ea0cf4361f67a3ec4"
+-  integrity sha512-q6NenYkEy2fn9+JyjIxMWcNjzTL/IhwqfzOut1/G3PrIFkrbl4AL7Wkse5tLrQUUyqGoAKU5+Pi5jnnXxH5HGw==
++  version "6.20.1"
++  resolved "https://registry.npmjs.org/@codemirror/autocomplete/-/autocomplete-6.20.1.tgz"
++  integrity sha512-1cvg3Vz1dSSToCNlJfRA2WSI4ht3K+WplO0UMOgmUYPivCyy2oueZY6Lx7M9wThm7SDUBViRmuT+OG/i8+ON9A==
+   dependencies:
+     "@codemirror/language" "^6.0.0"
+     "@codemirror/state" "^6.0.0"
+     "@codemirror/view" "^6.17.0"
+     "@lezer/common" "^1.0.0"
+ 
+-"@codemirror/commands@6.x", "@codemirror/commands@^6.0.0":
+-  version "6.10.0"
+-  resolved "https://registry.npmmirror.com/@codemirror/commands/-/commands-6.10.0.tgz#b3206984fec8443c4d910565eb2e9d591c7d80b2"
+-  integrity sha512-2xUIc5mHXQzT16JnyOFkh8PvfeXuIut3pslWGfsGOhxP/lpgRm9HOl/mpzLErgt5mXDovqA0d11P21gofRLb9w==
++"@codemirror/commands@^6.0.0", "@codemirror/commands@6.x":
++  version "6.10.3"
++  resolved "https://registry.npmjs.org/@codemirror/commands/-/commands-6.10.3.tgz"
++  integrity sha512-JFRiqhKu+bvSkDLI+rUhJwSxQxYb759W5GBezE8Uc8mHLqC9aV/9aTC7yJSqCtB3F00pylrLCwnyS91Ap5ej4Q==
+   dependencies:
+     "@codemirror/language" "^6.0.0"
+-    "@codemirror/state" "^6.4.0"
++    "@codemirror/state" "^6.6.0"
+     "@codemirror/view" "^6.27.0"
+     "@lezer/common" "^1.1.0"
+ 
+-"@codemirror/language@6.x", "@codemirror/language@^6.0.0":
+-  version "6.11.3"
+-  resolved "https://registry.npmmirror.com/@codemirror/language/-/language-6.11.3.tgz#8e6632df566a7ed13a1bd307f9837765bb1abfdd"
+-  integrity sha512-9HBM2XnwDj7fnu0551HkGdrUrrqmYq/WC5iv6nbY2WdicXdGbhR/gfbZOH73Aqj4351alY1+aoG9rCNfiwS1RA==
++"@codemirror/language@^6.0.0", "@codemirror/language@6.x":
++  version "6.12.3"
++  resolved "https://registry.npmjs.org/@codemirror/language/-/language-6.12.3.tgz"
++  integrity sha512-QwCZW6Tt1siP37Jet9Tb02Zs81TQt6qQrZR2H+eGMcFsL1zMrk2/b9CLC7/9ieP1fjIUMgviLWMmgiHoJrj+ZA==
+   dependencies:
+     "@codemirror/state" "^6.0.0"
+     "@codemirror/view" "^6.23.0"
+-    "@lezer/common" "^1.1.0"
++    "@lezer/common" "^1.5.0"
+     "@lezer/highlight" "^1.0.0"
+     "@lezer/lr" "^1.0.0"
+     style-mod "^4.0.0"
+ 
+ "@codemirror/lint@^6.0.0":
+-  version "6.9.1"
+-  resolved "https://registry.npmmirror.com/@codemirror/lint/-/lint-6.9.1.tgz#1af2cf32dca1971b9cf8318fba0a935ddde8adf1"
+-  integrity sha512-te7To1EQHePBQQzasDKWmK2xKINIXpk+xAiSYr9ZN+VB4KaT+/Hi2PEkeErTk5BV3PTz1TLyQL4MtJfPkKZ9sw==
++  version "6.9.5"
++  resolved "https://registry.npmjs.org/@codemirror/lint/-/lint-6.9.5.tgz"
++  integrity sha512-GElsbU9G7QT9xXhpUg1zWGmftA/7jamh+7+ydKRuT0ORpWS3wOSP0yT1FOlIZa7mIJjpVPipErsyvVqB9cfTFA==
+   dependencies:
+     "@codemirror/state" "^6.0.0"
+     "@codemirror/view" "^6.35.0"
+     crelt "^1.0.5"
+ 
+ "@codemirror/search@^6.0.0":
+-  version "6.5.11"
+-  resolved "https://registry.npmmirror.com/@codemirror/search/-/search-6.5.11.tgz#a324ffee36e032b7f67aa31c4fb9f3e6f9f3ed63"
+-  integrity sha512-KmWepDE6jUdL6n8cAAqIpRmLPBZ5ZKnicE8oGU/s3QrAVID+0VhLFrzUucVKHG5035/BSykhExDL/Xm7dHthiA==
++  version "6.6.0"
++  resolved "https://registry.npmjs.org/@codemirror/search/-/search-6.6.0.tgz"
++  integrity sha512-koFuNXcDvyyotWcgOnZGmY7LZqEOXZaaxD/j6n18TCLx2/9HieZJ5H6hs1g8FiRxBD0DNfs0nXn17g872RmYdw==
+   dependencies:
+     "@codemirror/state" "^6.0.0"
+-    "@codemirror/view" "^6.0.0"
++    "@codemirror/view" "^6.37.0"
+     crelt "^1.0.5"
+ 
+-"@codemirror/state@6.x", "@codemirror/state@^6.0.0", "@codemirror/state@^6.4.0", "@codemirror/state@^6.5.0":
+-  version "6.5.2"
+-  resolved "https://registry.npmmirror.com/@codemirror/state/-/state-6.5.2.tgz#8eca3a64212a83367dc85475b7d78d5c9b7076c6"
+-  integrity sha512-FVqsPqtPWKVVL3dPSxy8wEF/ymIEuVzF1PK3VbUgrxXpJUSHQWWZz4JMToquRxnkw+36LTamCZG2iua2Ptq0fA==
++"@codemirror/state@^6.0.0", "@codemirror/state@^6.6.0", "@codemirror/state@6.x":
++  version "6.6.0"
++  resolved "https://registry.npmjs.org/@codemirror/state/-/state-6.6.0.tgz"
++  integrity sha512-4nbvra5R5EtiCzr9BTHiTLc+MLXK2QGiAVYMyi8PkQd3SR+6ixar/Q/01Fa21TBIDOZXgeWV4WppsQolSreAPQ==
+   dependencies:
+     "@marijn/find-cluster-break" "^1.0.0"
+ 
+-"@codemirror/view@6.x", "@codemirror/view@^6.0.0", "@codemirror/view@^6.17.0", "@codemirror/view@^6.23.0", "@codemirror/view@^6.27.0", "@codemirror/view@^6.35.0":
+-  version "6.38.6"
+-  resolved "https://registry.npmmirror.com/@codemirror/view/-/view-6.38.6.tgz#25d9df071393801196c311025d2caa7a5523c26c"
+-  integrity sha512-qiS0z1bKs5WOvHIAC0Cybmv4AJSkAXgX5aD6Mqd2epSLlVJsQl8NG23jCVouIgkh4All/mrbdsf2UOLFnJw0tw==
++"@codemirror/view@^6.0.0", "@codemirror/view@^6.17.0", "@codemirror/view@^6.23.0", "@codemirror/view@^6.27.0", "@codemirror/view@^6.35.0", "@codemirror/view@^6.37.0", "@codemirror/view@6.x":
++  version "6.41.0"
++  resolved "https://registry.npmjs.org/@codemirror/view/-/view-6.41.0.tgz"
++  integrity sha512-6H/qadXsVuDY219Yljhohglve8xf4B8xJkVOEWfA5uiYKiTFppjqsvsfR5iPA0RbvRBoOyTZpbLIxe9+0UR8xA==
+   dependencies:
+-    "@codemirror/state" "^6.5.0"
++    "@codemirror/state" "^6.6.0"
+     crelt "^1.0.6"
+     style-mod "^4.1.0"
+     w3c-keyname "^2.2.4"
+@@ -146,28 +146,6 @@
+   resolved "https://registry.npmmirror.com/@ctrl/tinycolor/-/tinycolor-3.6.1.tgz"
+   integrity sha512-SITSV6aIXsuVNV3f3O0f2n/cgyEDWoSqtZMYiAmcsYHydcKrOz3gUxB/iXd/Qf08+IZX4KpgNbvUdMBmWz+kcA==
+ 
+-"@emnapi/core@1.9.2":
+-  version "1.9.2"
+-  resolved "https://registry.yarnpkg.com/@emnapi/core/-/core-1.9.2.tgz#3870265ecffc7352d01ead62d8d83d8358a2d034"
+-  integrity sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA==
+-  dependencies:
+-    "@emnapi/wasi-threads" "1.2.1"
+-    tslib "^2.4.0"
+-
+-"@emnapi/runtime@1.9.2":
+-  version "1.9.2"
+-  resolved "https://registry.yarnpkg.com/@emnapi/runtime/-/runtime-1.9.2.tgz#8b469a3db160817cadb1de9050211a9d1ea84fa2"
+-  integrity sha512-3U4+MIWHImeyu1wnmVygh5WlgfYDtyf0k8AbLhMFxOipihf6nrWC4syIm/SwEeec0mNSafiiNnMJwbza/Is6Lw==
+-  dependencies:
+-    tslib "^2.4.0"
+-
+-"@emnapi/wasi-threads@1.2.1":
+-  version "1.2.1"
+-  resolved "https://registry.yarnpkg.com/@emnapi/wasi-threads/-/wasi-threads-1.2.1.tgz#28fed21a1ba1ce797c44a070abc94d42f3ae8548"
+-  integrity sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w==
+-  dependencies:
+-    tslib "^2.4.0"
+-
+ "@emotion/hash@^0.9.0":
+   version "0.9.2"
+   resolved "https://registry.npmmirror.com/@emotion/hash/-/hash-0.9.2.tgz"
+@@ -178,130 +156,49 @@
+   resolved "https://registry.npmmirror.com/@emotion/unitless/-/unitless-0.8.1.tgz"
+   integrity sha512-KOEGMu6dmJZtpadb476IsZBclKvILjopjUii3V+7MnXIQCYh8W3NgNcgwo21n9LXZX6EDIKvqfjYxXebDwxKmQ==
+ 
+-"@jridgewell/sourcemap-codec@^1.5.0":
+-  version "1.5.0"
+-  resolved "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.5.0.tgz"
+-  integrity sha512-gv3ZRaISU3fjPAgNsriBRqGWQL6quFx04YMPW/zD8XMLsU32mhCCbfbO6KZFLjvYpCZ8zyDEgqsgf+PwPaM7GQ==
++"@jridgewell/sourcemap-codec@^1.5.5":
++  version "1.6.0"
++  resolved "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.6.0.tgz"
++  integrity sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==
+ 
+-"@lezer/common@^1.0.0", "@lezer/common@^1.1.0", "@lezer/common@^1.3.0":
+-  version "1.3.0"
+-  resolved "https://registry.npmmirror.com/@lezer/common/-/common-1.3.0.tgz#123427ec4c53c2c8367415b4441e555b4f85c696"
+-  integrity sha512-L9X8uHCYU310o99L3/MpJKYxPzXPOS7S0NmBaM7UO/x2Kb2WbmMLSkfvdr1KxRIFYOpbY0Jhn7CfLSUDzL8arQ==
++"@lezer/common@^1.0.0", "@lezer/common@^1.1.0", "@lezer/common@^1.3.0", "@lezer/common@^1.5.0":
++  version "1.5.2"
++  resolved "https://registry.npmjs.org/@lezer/common/-/common-1.5.2.tgz"
++  integrity sha512-sxQE460fPZyU3sdc8lafxiPwJHBzZRy/udNFynGQky1SePYBdhkBl1kOagA9uT3pxR8K09bOrmTUqA9wb/PjSQ==
+ 
+ "@lezer/highlight@^1.0.0":
+-  version "1.2.2"
+-  resolved "https://registry.npmmirror.com/@lezer/highlight/-/highlight-1.2.2.tgz#f0fcfaf0e87fd1037930964ad62b8dee45d66e97"
+-  integrity sha512-z8TQwaBXXQIvG6i2g3e9cgMwUUXu9Ib7jo2qRRggdhwKpM56Dw3PM3wmexn+EGaaOZ7az0K7sjc3/gcGW7sz7A==
++  version "1.2.3"
++  resolved "https://registry.npmjs.org/@lezer/highlight/-/highlight-1.2.3.tgz"
++  integrity sha512-qXdH7UqTvGfdVBINrgKhDsVTJTxactNNxLk7+UMwZhU13lMHaOBlJe9Vqp907ya56Y3+ed2tlqzys7jDkTmW0g==
+   dependencies:
+     "@lezer/common" "^1.3.0"
+ 
+ "@lezer/lr@^1.0.0":
+-  version "1.4.2"
+-  resolved "https://registry.npmmirror.com/@lezer/lr/-/lr-1.4.2.tgz#931ea3dea8e9de84e90781001dae30dea9ff1727"
+-  integrity sha512-pu0K1jCIdnQ12aWNaAVU5bzi7Bd1w54J3ECgANPmYLtQKP0HBj2cE/5coBD66MT10xbtIuUr7tg0Shbsvk0mDA==
++  version "1.4.8"
++  resolved "https://registry.npmjs.org/@lezer/lr/-/lr-1.4.8.tgz"
++  integrity sha512-bPWa0Pgx69ylNlMlPvBPryqeLYQjyJjqPx+Aupm5zydLIF3NE+6MMLT8Yi23Bd9cif9VS00aUebn+6fDIGBcDA==
+   dependencies:
+     "@lezer/common" "^1.0.0"
+ 
+ "@marijn/find-cluster-break@^1.0.0":
+   version "1.0.2"
+-  resolved "https://registry.npmmirror.com/@marijn/find-cluster-break/-/find-cluster-break-1.0.2.tgz#775374306116d51c0c500b8c4face0f9a04752d8"
++  resolved "https://registry.npmjs.org/@marijn/find-cluster-break/-/find-cluster-break-1.0.2.tgz"
+   integrity sha512-l0h88YhZFyKdXIFNfSWpyjStDjGHwZ/U7iobcK1cQQD8sejsONdQtTVU+1wVN1PBw40PiiHB1vA5S7VTfQiP9g==
+ 
+-"@napi-rs/wasm-runtime@^1.1.3":
+-  version "1.1.3"
+-  resolved "https://registry.yarnpkg.com/@napi-rs/wasm-runtime/-/wasm-runtime-1.1.3.tgz#1eeb8699770481306e5fcd84471f20fcb6177336"
+-  integrity sha512-xK9sGVbJWYb08+mTJt3/YV24WxvxpXcXtP6B172paPZ+Ts69Re9dAr7lKwJoeIx8OoeuimEiRZ7umkiUVClmmQ==
+-  dependencies:
+-    "@tybys/wasm-util" "^0.10.1"
+-
+-"@oxc-project/types@=0.124.0":
+-  version "0.124.0"
+-  resolved "https://registry.yarnpkg.com/@oxc-project/types/-/types-0.124.0.tgz#1dfd7b3fbb98febc2f91b505f48c940db73c8701"
+-  integrity sha512-VBFWMTBvHxS11Z5Lvlr3IWgrwhMTXV+Md+EQF0Xf60+wAdsGFTBx7X7K/hP4pi8N7dcm1RvcHwDxZ16Qx8keUg==
+-
+-"@rolldown/binding-android-arm64@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-android-arm64/-/binding-android-arm64-1.0.0-rc.15.tgz#ca20574c469ade7b941f90c9af5e83e7c67f06b7"
+-  integrity sha512-YYe6aWruPZDtHNpwu7+qAHEMbQ/yRl6atqb/AhznLTnD3UY99Q1jE7ihLSahNWkF4EqRPVC4SiR4O0UkLK02tA==
+-
+-"@rolldown/binding-darwin-arm64@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-darwin-arm64/-/binding-darwin-arm64-1.0.0-rc.15.tgz#ce2c5c7fc4958dfc94783dc09b3d09f3c2e1d072"
+-  integrity sha512-oArR/ig8wNTPYsXL+Mzhs0oxhxfuHRfG7Ikw7jXsw8mYOtk71W0OkF2VEVh699pdmzjPQsTjlD1JIOoHkLP1Fg==
+-
+-"@rolldown/binding-darwin-x64@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-darwin-x64/-/binding-darwin-x64-1.0.0-rc.15.tgz#251ecdf1fdb751031cb6486907c105daaf9dab21"
+-  integrity sha512-YzeVqOqjPYvUbJSWJ4EDL8ahbmsIXQpgL3JVipmN+MX0XnXMeWomLN3Fb+nwCmP/jfyqte5I3XRSm7OfQrbyxw==
+-
+-"@rolldown/binding-freebsd-x64@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-freebsd-x64/-/binding-freebsd-x64-1.0.0-rc.15.tgz#dbcfe95f409bf671a77bd83bff0fdc877d217728"
+-  integrity sha512-9Erhx956jeQ0nNTyif1+QWAXDRD38ZNjr//bSHrt6wDwB+QkAfl2q6Mn1k6OBPerznjRmbM10lgRb1Pli4xZPw==
+-
+-"@rolldown/binding-linux-arm-gnueabihf@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-linux-arm-gnueabihf/-/binding-linux-arm-gnueabihf-1.0.0-rc.15.tgz#ea002b45445be6f9ed1883a834b335bc2ccd510f"
+-  integrity sha512-cVwk0w8QbZJGTnP/AHQBs5yNwmpgGYStL88t4UIaqcvYJWBfS0s3oqVLZPwsPU6M0zlW4GqjP0Zq5MnAGwFeGA==
+-
+-"@rolldown/binding-linux-arm64-gnu@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-linux-arm64-gnu/-/binding-linux-arm64-gnu-1.0.0-rc.15.tgz#12b96e7e7821a9dc2cd5c670ad56882987ed5c62"
+-  integrity sha512-eBZ/u8iAK9SoHGanqe/jrPnY0JvBN6iXbVOsbO38mbz+ZJsaobExAm1Iu+rxa4S1l2FjG0qEZn4Rc6X8n+9M+w==
+-
+-"@rolldown/binding-linux-arm64-musl@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-linux-arm64-musl/-/binding-linux-arm64-musl-1.0.0-rc.15.tgz#738b0f62f0b65bf676dfe48595017f1883859d1f"
+-  integrity sha512-ZvRYMGrAklV9PEkgt4LQM6MjQX2P58HPAuecwYObY2DhS2t35R0I810bKi0wmaYORt6m/2Sm+Z+nFgb0WhXNcQ==
+-
+-"@rolldown/binding-linux-ppc64-gnu@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-linux-ppc64-gnu/-/binding-linux-ppc64-gnu-1.0.0-rc.15.tgz#3088b9fbc2783033985b558316f87f39281bc533"
+-  integrity sha512-VDpgGBzgfg5hLg+uBpCLoFG5kVvEyafmfxGUV0UHLcL5irxAK7PKNeC2MwClgk6ZAiNhmo9FLhRYgvMmedLtnQ==
+-
+-"@rolldown/binding-linux-s390x-gnu@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-linux-s390x-gnu/-/binding-linux-s390x-gnu-1.0.0-rc.15.tgz#ac0aa6f1b72e3151d56c43145a71c745cf862a9a"
+-  integrity sha512-y1uXY3qQWCzcPgRJATPSOUP4tCemh4uBdY7e3EZbVwCJTY3gLJWnQABgeUetvED+bt1FQ01OeZwvhLS2bpNrAQ==
+-
+-"@rolldown/binding-linux-x64-gnu@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-linux-x64-gnu/-/binding-linux-x64-gnu-1.0.0-rc.15.tgz#b8cf27aa5be6da641c22dad5665d0240551d2dec"
+-  integrity sha512-023bTPBod7J3Y/4fzAN6QtpkSABR0rigtrwaP+qSEabUh5zf6ELr9Nc7GujaROuPY3uwdSIXWrvhn1KxOvurWA==
+-
+-"@rolldown/binding-linux-x64-musl@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-linux-x64-musl/-/binding-linux-x64-musl-1.0.0-rc.15.tgz#4531f9eca77963935026634ba9b61c2535340534"
+-  integrity sha512-witB2O0/hU4CgfOOKUoeFgQ4GktPi1eEbAhaLAIpgD6+ZnhcPkUtPsoKKHRzmOoWPZue46IThdSgdo4XneOLYw==
+-
+-"@rolldown/binding-openharmony-arm64@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-openharmony-arm64/-/binding-openharmony-arm64-1.0.0-rc.15.tgz#66ff691a65f9325171bced98e353b4cc4b0095c3"
+-  integrity sha512-UCL68NJ0Ud5zRipXZE9dF5PmirzJE4E4BCIOOssEnM7wLDsxjc6Qb0sGDxTNRTP53I6MZpygyCpY8Aa8sPfKPg==
+-
+-"@rolldown/binding-wasm32-wasi@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-wasm32-wasi/-/binding-wasm32-wasi-1.0.0-rc.15.tgz#7db6c90aa510eef65d7d0f14e8ca23775e8e5eee"
+-  integrity sha512-ApLruZq/ig+nhaE7OJm4lDjayUnOHVUa77zGeqnqZ9pn0ovdVbbNPerVibLXDmWeUZXjIYIT8V3xkT58Rm9u5Q==
+-  dependencies:
+-    "@emnapi/core" "1.9.2"
+-    "@emnapi/runtime" "1.9.2"
+-    "@napi-rs/wasm-runtime" "^1.1.3"
+-
+-"@rolldown/binding-win32-arm64-msvc@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-win32-arm64-msvc/-/binding-win32-arm64-msvc-1.0.0-rc.15.tgz#81f9097abbd4493cc13373b26f5a3da8461dbb47"
+-  integrity sha512-KmoUoU7HnN+Si5YWJigfTws1jz1bKBYDQKdbLspz0UaqjjFkddHsqorgiW1mxcAj88lYUE6NC/zJNwT+SloqtA==
++"@oxc-project/types@=0.153.0":
++  version "0.153.0"
++  resolved "https://registry.npmjs.org/@oxc-project/types/-/types-0.153.0.tgz"
++  integrity sha512-jSNrRIyvPVLL5E1z/tS5zLAprosGz/FuI1PWwEOz59j3E4TTTzSpqKb/RDGqJhhW0QHYISGXxq582wGx6T11Tw==
+ 
+-"@rolldown/binding-win32-x64-msvc@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/binding-win32-x64-msvc/-/binding-win32-x64-msvc-1.0.0-rc.15.tgz#cef11bc89149f3a77771727be75490fbb13ae193"
+-  integrity sha512-3P2A8L+x75qavWLe/Dll3EYBJLQmtkJN8rfh+U/eR3MqMgL/h98PhYI+JFfXuDPgPeCB7iZAKiqii5vqOvnA0g==
++"@rolldown/binding-win32-x64-msvc@1.2.13":
++  version "1.2.13"
++  resolved "https://registry.npmjs.org/@rolldown/binding-win32-x64-msvc/-/binding-win32-x64-msvc-1.2.13.tgz"
++  integrity sha512-UKhFaZTeTcbKrb3iU82m17jVcPEAoqDkCN5MBqgPyZSwp/cQmib21crTS0DdH7T1B7wZRWEI89YQAOJMet5yhg==
+ 
+-"@rolldown/pluginutils@1.0.0-rc.15":
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/@rolldown/pluginutils/-/pluginutils-1.0.0-rc.15.tgz#e75d7731593e195d23710f9ff49bf5c745c96682"
+-  integrity sha512-UromN0peaE53IaBRe9W7CjrZgXl90fqGpK+mIZbA3qSTeYqg3pqpROBdIPvOG3F5ereDHNwoHBI2e50n1BDr1g==
++"@rolldown/pluginutils@^1.0.0", "@rolldown/pluginutils@^1.0.1":
++  version "1.0.1"
++  resolved "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.1.tgz"
++  integrity sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==
+ 
+ "@simonwep/pickr@~1.8.0":
+   version "1.8.2"
+@@ -311,102 +208,110 @@
+     core-js "^3.15.1"
+     nanopop "^2.1.0"
+ 
+-"@tybys/wasm-util@^0.10.1":
+-  version "0.10.1"
+-  resolved "https://registry.yarnpkg.com/@tybys/wasm-util/-/wasm-util-0.10.1.tgz#ecddd3205cf1e2d5274649ff0eedd2991ed7f414"
+-  integrity sha512-9tTaPJLSiejZKx+Bmog4uSubteqTvFrVrURwkmHixBo0G4seD0zUxp98E1DzUBJxLQ3NPwXrGKDiVjwx/DpPsg==
+-  dependencies:
+-    tslib "^2.4.0"
++"@types/trusted-types@^2.0.7":
++  version "2.0.7"
++  resolved "https://registry.npmjs.org/@types/trusted-types/-/trusted-types-2.0.7.tgz"
++  integrity sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==
+ 
+-"@vitejs/plugin-vue@^2.0.0":
+-  version "2.3.4"
+-  resolved "https://registry.npmjs.org/@vitejs/plugin-vue/-/plugin-vue-2.3.4.tgz"
+-  integrity sha512-IfFNbtkbIm36O9KB8QodlwwYvTEsJb4Lll4c2IwB3VHc2gie2mSPtSzL0eYay7X2jd/2WX02FjSGTWR6OPr/zg==
++"@vitejs/plugin-vue@^6.0.10":
++  version "6.0.10"
++  resolved "https://registry.npmjs.org/@vitejs/plugin-vue/-/plugin-vue-6.0.10.tgz"
++  integrity sha512-b80aUQh3n+qEzzZm5oQp3rT2QImeCx58K6eFl/RkJ3d65KW0kTuv5lNsLRVAjbW9YRUpo/wzmvzMgV34bTAItA==
++  dependencies:
++    "@rolldown/pluginutils" "^1.0.1"
+ 
+-"@vue/compiler-core@3.5.14":
+-  version "3.5.14"
+-  resolved "https://registry.npmjs.org/@vue/compiler-core/-/compiler-core-3.5.14.tgz"
+-  integrity sha512-k7qMHMbKvoCXIxPhquKQVw3Twid3Kg4s7+oYURxLGRd56LiuHJVrvFKI4fm2AM3c8apqODPfVJGoh8nePbXMRA==
++"@vue/compiler-core@3.5.43":
++  version "3.5.43"
++  resolved "https://registry.npmjs.org/@vue/compiler-core/-/compiler-core-3.5.43.tgz"
++  integrity sha512-zdiLhnbe1QQqgDT8xZMpNmyqZ3qlI+/Q/FHQco57Kwl/b05HhCzN6eVGN9QU9rbga4CrS0H5SYY8VGHZCt/1Hg==
+   dependencies:
+-    "@babel/parser" "^7.27.2"
+-    "@vue/shared" "3.5.14"
+-    entities "^4.5.0"
++    "@babel/parser" "^7.29.8"
++    "@vue/shared" "3.5.43"
++    entities "^7.0.1"
+     estree-walker "^2.0.2"
+     source-map-js "^1.2.1"
+ 
+-"@vue/compiler-dom@3.5.14":
+-  version "3.5.14"
+-  resolved "https://registry.npmjs.org/@vue/compiler-dom/-/compiler-dom-3.5.14.tgz"
+-  integrity sha512-1aOCSqxGOea5I80U2hQJvXYpPm/aXo95xL/m/mMhgyPUsKe9jhjwWpziNAw7tYRnbz1I61rd9Mld4W9KmmRoug==
++"@vue/compiler-dom@3.5.43":
++  version "3.5.43"
++  resolved "https://registry.npmjs.org/@vue/compiler-dom/-/compiler-dom-3.5.43.tgz"
++  integrity sha512-PEZoAk3NQmsn/ejMzSOCyTYqwGqczrWm70PuhBKjjv1+TCoQAaO/zOqNwjV+honlNstT5ILxtc+8r8UUfj+iEQ==
+   dependencies:
+-    "@vue/compiler-core" "3.5.14"
+-    "@vue/shared" "3.5.14"
++    "@vue/compiler-core" "3.5.43"
++    "@vue/shared" "3.5.43"
+ 
+-"@vue/compiler-sfc@3.5.14":
+-  version "3.5.14"
+-  resolved "https://registry.npmjs.org/@vue/compiler-sfc/-/compiler-sfc-3.5.14.tgz"
+-  integrity sha512-9T6m/9mMr81Lj58JpzsiSIjBgv2LiVoWjIVa7kuXHICUi8LiDSIotMpPRXYJsXKqyARrzjT24NAwttrMnMaCXA==
++"@vue/compiler-sfc@^3.2.24", "@vue/compiler-sfc@3.5.43":
++  version "3.5.43"
++  resolved "https://registry.npmjs.org/@vue/compiler-sfc/-/compiler-sfc-3.5.43.tgz"
++  integrity sha512-FCbrG3XNCRl+js3huuKx4IVHBLTvMkJhVepjbxSPu1gn4yWLaYtGNQdjJGZaMytXB6qb76qQDDmDSLy/vkmleQ==
+   dependencies:
+-    "@babel/parser" "^7.27.2"
+-    "@vue/compiler-core" "3.5.14"
+-    "@vue/compiler-dom" "3.5.14"
+-    "@vue/compiler-ssr" "3.5.14"
+-    "@vue/shared" "3.5.14"
++    "@babel/parser" "^7.29.8"
++    "@vue/compiler-core" "3.5.43"
++    "@vue/compiler-dom" "3.5.43"
++    "@vue/compiler-ssr" "3.5.43"
++    "@vue/shared" "3.5.43"
+     estree-walker "^2.0.2"
+-    magic-string "^0.30.17"
+-    postcss "^8.5.3"
++    magic-string "^0.30.21"
++    postcss "^8.5.28"
+     source-map-js "^1.2.1"
+ 
+-"@vue/compiler-ssr@3.5.14":
+-  version "3.5.14"
+-  resolved "https://registry.npmjs.org/@vue/compiler-ssr/-/compiler-ssr-3.5.14.tgz"
+-  integrity sha512-Y0G7PcBxr1yllnHuS/NxNCSPWnRGH4Ogrp0tsLA5QemDZuJLs99YjAKQ7KqkHE0vCg4QTKlQzXLKCMF7WPSl7Q==
++"@vue/compiler-ssr@3.5.43":
++  version "3.5.43"
++  resolved "https://registry.npmjs.org/@vue/compiler-ssr/-/compiler-ssr-3.5.43.tgz"
++  integrity sha512-GF62orf7KiJX9RqrHNGrYBudsQGD0OhJ5nDs90O8UiDuS40+YMYomiXu6w6EuvtXuRDc3MSNis3EaaSKAVSWpg==
+   dependencies:
+-    "@vue/compiler-dom" "3.5.14"
+-    "@vue/shared" "3.5.14"
++    "@vue/compiler-dom" "3.5.43"
++    "@vue/shared" "3.5.43"
+ 
+ "@vue/devtools-api@^6.6.4":
+   version "6.6.4"
+   resolved "https://registry.npmjs.org/@vue/devtools-api/-/devtools-api-6.6.4.tgz"
+   integrity sha512-sGhTPMuXqZ1rVOk32RylztWkfXTRhuS7vgAKv0zjqk8gbsHkJ7xfFf+jbySxt7tWObEJwyKaHMikV/WGDiQm8g==
+ 
+-"@vue/reactivity@3.5.14":
+-  version "3.5.14"
+-  resolved "https://registry.npmjs.org/@vue/reactivity/-/reactivity-3.5.14.tgz"
+-  integrity sha512-7cK1Hp343Fu/SUCCO52vCabjvsYu7ZkOqyYu7bXV9P2yyfjUMUXHZafEbq244sP7gf+EZEz+77QixBTuEqkQQw==
++"@vue/reactivity@3.5.43":
++  version "3.5.43"
++  resolved "https://registry.npmjs.org/@vue/reactivity/-/reactivity-3.5.43.tgz"
++  integrity sha512-G/c9GyOZNI2jVaaS6OX1EF1SSFSv7H0ERqNTl4+DTFMlZmB5eVAB53aLQNam/7NL2NPtaDD7RdVrzf8uJzMuOA==
+   dependencies:
+-    "@vue/shared" "3.5.14"
++    "@vue/shared" "3.5.43"
+ 
+-"@vue/runtime-core@3.5.14":
+-  version "3.5.14"
+-  resolved "https://registry.npmjs.org/@vue/runtime-core/-/runtime-core-3.5.14.tgz"
+-  integrity sha512-w9JWEANwHXNgieAhxPpEpJa+0V5G0hz3NmjAZwlOebtfKyp2hKxKF0+qSh0Xs6/PhfGihuSdqMprMVcQU/E6ag==
++"@vue/runtime-core@3.5.43":
++  version "3.5.43"
++  resolved "https://registry.npmjs.org/@vue/runtime-core/-/runtime-core-3.5.43.tgz"
++  integrity sha512-hU6U6VnVhBGQDpvlnnDlIB8ZGJBiOcgk2lh/0InltHiz3D8oSkluvuvY+do1G2H3+udeKFsmaBlgVYP7gXQzEw==
+   dependencies:
+-    "@vue/reactivity" "3.5.14"
+-    "@vue/shared" "3.5.14"
++    "@vue/reactivity" "3.5.43"
++    "@vue/shared" "3.5.43"
+ 
+-"@vue/runtime-dom@3.5.14":
+-  version "3.5.14"
+-  resolved "https://registry.npmjs.org/@vue/runtime-dom/-/runtime-dom-3.5.14.tgz"
+-  integrity sha512-lCfR++IakeI35TVR80QgOelsUIdcKjd65rWAMfdSlCYnaEY5t3hYwru7vvcWaqmrK+LpI7ZDDYiGU5V3xjMacw==
++"@vue/runtime-dom@3.5.43":
++  version "3.5.43"
++  resolved "https://registry.npmjs.org/@vue/runtime-dom/-/runtime-dom-3.5.43.tgz"
++  integrity sha512-Bb2Jc0YjjJdMt1SJmb9b2L/IWd3I8lIT9x9eS/xvvP9CiVgna0ffua74xKRmt4/uSJ+0r4iN8ex1jrqkhQGWQw==
+   dependencies:
+-    "@vue/reactivity" "3.5.14"
+-    "@vue/runtime-core" "3.5.14"
+-    "@vue/shared" "3.5.14"
+-    csstype "^3.1.3"
+-
+-"@vue/server-renderer@3.5.14":
+-  version "3.5.14"
+-  resolved "https://registry.npmjs.org/@vue/server-renderer/-/server-renderer-3.5.14.tgz"
+-  integrity sha512-Rf/ISLqokIvcySIYnv3tNWq40PLpNLDLSJwwVWzG6MNtyIhfbcrAxo5ZL9nARJhqjZyWWa40oRb2IDuejeuv6w==
++    "@vue/reactivity" "3.5.43"
++    "@vue/runtime-core" "3.5.43"
++    "@vue/shared" "3.5.43"
++    csstype "^3.2.3"
++
++"@vue/server-renderer@3.5.43":
++  version "3.5.43"
++  resolved "https://registry.npmjs.org/@vue/server-renderer/-/server-renderer-3.5.43.tgz"
++  integrity sha512-l2Ygjv9NehV94PSBxNWsAHC0j/eIIKbn92mBuWXAPGLnn6HfJ6MH5ubsd+Nk0YoZ5FRuxWI1P2VSoh+dbPQhCQ==
+   dependencies:
+-    "@vue/compiler-ssr" "3.5.14"
+-    "@vue/shared" "3.5.14"
++    "@vue/compiler-ssr" "3.5.43"
++    "@vue/runtime-dom" "3.5.43"
++    "@vue/shared" "3.5.43"
+ 
+-"@vue/shared@3.5.14":
+-  version "3.5.14"
+-  resolved "https://registry.npmjs.org/@vue/shared/-/shared-3.5.14.tgz"
+-  integrity sha512-oXTwNxVfc9EtP1zzXAlSlgARLXNC84frFYkS0HHz0h3E4WZSP9sywqjqzGCP9Y34M8ipNmd380pVgmMuwELDyQ==
++"@vue/shared@3.5.43":
++  version "3.5.43"
++  resolved "https://registry.npmjs.org/@vue/shared/-/shared-3.5.43.tgz"
++  integrity sha512-uksS7YGMR5NZyr4JNq0Rp+QyLns0ueaz20KwzIPW9R0LH1Vnt4E+XUM29PNseEbf1www2gOuhuDi5AKOIXag9Q==
++
++agent-base@6:
++  version "6.0.2"
++  resolved "https://registry.npmjs.org/agent-base/-/agent-base-6.0.2.tgz"
++  integrity sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ==
++  dependencies:
++    debug "4"
+ 
+ ant-design-vue@^4.2.6:
+   version "4.2.6"
+@@ -452,13 +357,14 @@ asynckit@^0.4.0:
+   integrity sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q==
+ 
+ axios@^1.12.0:
+-  version "1.12.2"
+-  resolved "https://registry.npmmirror.com/axios/-/axios-1.12.2.tgz#6c307390136cf7a2278d09cec63b136dfc6e6da7"
+-  integrity sha512-vMJzPewAlRyOgxV2dU0Cuz2O8zzzx9VYtbJOaBgXFeLc4IV/Eg50n4LowmehOOR61S8ZMpc2K5Sa7g6A4jfkUw==
++  version "1.20.0"
++  resolved "https://registry.npmjs.org/axios/-/axios-1.20.0.tgz"
++  integrity sha512-r8aOh8j9cGKpgQAqpzrUHnSIc6a59Y3Xf/cv8sy1DrHCkZHzQGEuoq1tARk6qSyDdtQGSDgpb9kFlruzPvrgwg==
+   dependencies:
+-    follow-redirects "^1.15.6"
+-    form-data "^4.0.4"
+-    proxy-from-env "^1.1.0"
++    follow-redirects "^1.16.0"
++    form-data "^4.0.6"
++    https-proxy-agent "^5.0.1"
++    proxy-from-env "^2.1.0"
+ 
+ b-tween@^0.3.3:
+   version "0.3.3"
+@@ -478,9 +384,9 @@ call-bind-apply-helpers@^1.0.1, call-bind-apply-helpers@^1.0.2:
+     es-errors "^1.3.0"
+     function-bind "^1.1.2"
+ 
+-codemirror@^6.0.2:
++codemirror@^6.0.2, codemirror@6.x:
+   version "6.0.2"
+-  resolved "https://registry.npmmirror.com/codemirror/-/codemirror-6.0.2.tgz#4d3fea1ad60b6753f97ca835f2f48c6936a8946e"
++  resolved "https://registry.npmjs.org/codemirror/-/codemirror-6.0.2.tgz"
+   integrity sha512-VhydHotNW5w1UGK0Qj96BwSk/Zqbp9WbnyK2W/eVMv4QyF41INRGpjUhFJY7/uDNuudSc33a/PKr4iDqRduvHw==
+   dependencies:
+     "@codemirror/autocomplete" "^6.0.0"
+@@ -498,7 +404,7 @@ color-convert@^1.9.3:
+   dependencies:
+     color-name "1.1.3"
+ 
+-color-name@1.1.3, color-name@^1.0.0:
++color-name@^1.0.0, color-name@1.1.3:
+   version "1.1.3"
+   resolved "https://registry.npmjs.org/color-name/-/color-name-1.1.3.tgz"
+   integrity sha512-72fSenhMw2HZMTVHeCA9KCmpEIbzWiQsjN+BHcBbS9vr1mtt+vJjPdksIBNUmKAW8TFUDPJK5SUU3QhE9NEXDw==
+@@ -538,19 +444,26 @@ core-js@^3.15.1:
+ 
+ crelt@^1.0.5, crelt@^1.0.6:
+   version "1.0.6"
+-  resolved "https://registry.npmmirror.com/crelt/-/crelt-1.0.6.tgz#7cc898ea74e190fb6ef9dae57f8f81cf7302df72"
++  resolved "https://registry.npmjs.org/crelt/-/crelt-1.0.6.tgz"
+   integrity sha512-VQ2MBenTq1fWZUH9DJNGti7kKv6EeAuYr3cLwxUWhIu1baTaXh4Ib5W2CqHVqib4/MqbYGJqiL3Zb8GJZr3l4g==
+ 
+-csstype@^3.1.1, csstype@^3.1.3:
+-  version "3.1.3"
+-  resolved "https://registry.npmjs.org/csstype/-/csstype-3.1.3.tgz"
+-  integrity sha512-M1uQkMl8rQK/szD0LNhtqxIPLpimGm8sOBwU7lLnCpSbTyY3yeU1Vc7l4KT5zT4s/yOxHH5O7tIuuLOCnLADRw==
++csstype@^3.1.1, csstype@^3.2.3:
++  version "3.2.3"
++  resolved "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz"
++  integrity sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==
+ 
+ dayjs@^1.10.5, dayjs@^1.11.13:
+   version "1.11.13"
+   resolved "https://registry.npmjs.org/dayjs/-/dayjs-1.11.13.tgz"
+   integrity sha512-oaMBel6gjolK862uaPQOVTA7q3TZhuSvuMQAAglQDOWYO9A91IrAOUJEyKVlqJlHE0vq5p5UXxzdPfMH/x6xNg==
+ 
++debug@4:
++  version "4.4.3"
++  resolved "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz"
++  integrity sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==
++  dependencies:
++    ms "^2.1.3"
++
+ delayed-stream@~1.0.0:
+   version "1.0.0"
+   resolved "https://registry.npmjs.org/delayed-stream/-/delayed-stream-1.0.0.tgz"
+@@ -558,7 +471,7 @@ delayed-stream@~1.0.0:
+ 
+ detect-libc@^2.0.3:
+   version "2.1.2"
+-  resolved "https://registry.yarnpkg.com/detect-libc/-/detect-libc-2.1.2.tgz#689c5dcdc1900ef5583a4cb9f6d7b473742074ad"
++  resolved "https://registry.npmjs.org/detect-libc/-/detect-libc-2.1.2.tgz"
+   integrity sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==
+ 
+ dom-align@^1.12.1:
+@@ -571,10 +484,12 @@ dom-scroll-into-view@^2.0.0:
+   resolved "https://registry.npmmirror.com/dom-scroll-into-view/-/dom-scroll-into-view-2.0.1.tgz"
+   integrity sha512-bvVTQe1lfaUr1oFzZX80ce9KLDlZ3iU+XGNE/bz9HnGdklTieqsbmsLHe+rT2XWqopvL0PckkYqN7ksmm5pe3w==
+ 
+-dompurify@3.1.7:
+-  version "3.1.7"
+-  resolved "https://registry.npmmirror.com/dompurify/-/dompurify-3.1.7.tgz#711a8c96479fb6ced93453732c160c3c72418a6a"
+-  integrity sha512-VaTstWtsneJY8xzy7DekmYWEOZcmzIe3Qb3zPd4STve1OBTa+e+WmS1ITQec1fZYXI3HCsOZZiSMpG6oxoWMWQ==
++dompurify@3.4.16:
++  version "3.4.16"
++  resolved "https://registry.npmjs.org/dompurify/-/dompurify-3.4.16.tgz"
++  integrity sha512-sqo+pNp3qRhCIpbgRi1y8Tgk27Bo2Ry7w0dC1NBeNTdZChWjz9Xb/KOoZbRP/R6pQZ80Qw8YhXw13hWWBbMRnQ==
++  optionalDependencies:
++    "@types/trusted-types" "^2.0.7"
+ 
+ dunder-proto@^1.0.1:
+   version "1.0.1"
+@@ -585,10 +500,10 @@ dunder-proto@^1.0.1:
+     es-errors "^1.3.0"
+     gopd "^1.2.0"
+ 
+-entities@^4.5.0:
+-  version "4.5.0"
+-  resolved "https://registry.npmjs.org/entities/-/entities-4.5.0.tgz"
+-  integrity sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw==
++entities@^7.0.1:
++  version "7.0.1"
++  resolved "https://registry.npmjs.org/entities/-/entities-7.0.1.tgz"
++  integrity sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==
+ 
+ es-define-property@^1.0.1:
+   version "1.0.1"
+@@ -601,9 +516,9 @@ es-errors@^1.3.0:
+   integrity sha512-Zf5H2Kxt2xjTvbJvP2ZWLEICxA6j+hAmMzIlypy4xcBg1vKVnx89Wy0GbS+kf5cwCVFFzdCFh2XSCFNULS6csw==
+ 
+ es-object-atoms@^1.0.0, es-object-atoms@^1.1.1:
+-  version "1.1.1"
+-  resolved "https://registry.npmjs.org/es-object-atoms/-/es-object-atoms-1.1.1.tgz"
+-  integrity sha512-FGgH2h8zKNim9ljj7dankFPcICIK9Cp5bm+c2gQSYePhpaG5+esrLODihIorn+Pe6FGJzWhXQotPv73jTaldXA==
++  version "1.1.2"
++  resolved "https://registry.npmjs.org/es-object-atoms/-/es-object-atoms-1.1.2.tgz"
++  integrity sha512-HWcBoN6NileqtSydK2FqHbS/LoDd2pqrnQHLyJzBj4kOp/ky2MWMN694xOfkK8/SnUsW2DH7EfyVlydKCsm1Zw==
+   dependencies:
+     es-errors "^1.3.0"
+ 
+@@ -624,24 +539,24 @@ estree-walker@^2.0.2:
+ 
+ fdir@^6.5.0:
+   version "6.5.0"
+-  resolved "https://registry.yarnpkg.com/fdir/-/fdir-6.5.0.tgz#ed2ab967a331ade62f18d077dae192684d50d350"
++  resolved "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz"
+   integrity sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==
+ 
+-follow-redirects@^1.15.6:
+-  version "1.15.9"
+-  resolved "https://registry.npmjs.org/follow-redirects/-/follow-redirects-1.15.9.tgz"
+-  integrity sha512-gew4GsXizNgdoRyqmyfMHyAmXsZDk6mHkSxZFCzW9gwlbtOW44CDtYavM+y+72qD/Vq2l550kMF52DT8fOLJqQ==
++follow-redirects@^1.16.0:
++  version "1.16.1"
++  resolved "https://registry.npmjs.org/follow-redirects/-/follow-redirects-1.16.1.tgz"
++  integrity sha512-FNvFGzoMLWmE6Yj9spb/zjd7yiNCHiAW9/Tg9CXrQ8wuu32HtlJOwWO11OJafl5FfY3DxTdQ0vj42zU1kvv5jg==
+ 
+-form-data@^4.0.4:
+-  version "4.0.4"
+-  resolved "https://registry.npmmirror.com/form-data/-/form-data-4.0.4.tgz#784cdcce0669a9d68e94d11ac4eea98088edd2c4"
+-  integrity sha512-KrGhL9Q4zjj0kiUt5OO4Mr/A/jlI2jDYs5eHBpYHPcBEVSiipAvn2Ko2HnPe20rmcuuvMHNdZFp+4IlGTMF0Ow==
++form-data@^4.0.6:
++  version "4.0.6"
++  resolved "https://registry.npmjs.org/form-data/-/form-data-4.0.6.tgz"
++  integrity sha512-vKatAh4SlVfgbv+YtmhiRjhEMJsYpsG1Y2rMQtR+SVSbytsSD1YGzDIcrAJmdFec88u/+VoGmxnl+80gL1tRCQ==
+   dependencies:
+     asynckit "^0.4.0"
+     combined-stream "^1.0.8"
+     es-set-tostringtag "^2.1.0"
+-    hasown "^2.0.2"
+-    mime-types "^2.1.12"
++    hasown "^2.0.4"
++    mime-types "^2.1.35"
+ 
+ fs-extra@^11.2.0:
+   version "11.3.2"
+@@ -652,11 +567,6 @@ fs-extra@^11.2.0:
+     jsonfile "^6.0.1"
+     universalify "^2.0.0"
+ 
+-fsevents@~2.3.3:
+-  version "2.3.3"
+-  resolved "https://registry.yarnpkg.com/fsevents/-/fsevents-2.3.3.tgz#cac6407785d03675a2a5e1a5305c697b347d90d6"
+-  integrity sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==
+-
+ function-bind@^1.1.2:
+   version "1.1.2"
+   resolved "https://registry.npmjs.org/function-bind/-/function-bind-1.1.2.tgz"
+@@ -708,13 +618,21 @@ has-tostringtag@^1.0.2:
+   dependencies:
+     has-symbols "^1.0.3"
+ 
+-hasown@^2.0.2:
+-  version "2.0.2"
+-  resolved "https://registry.npmjs.org/hasown/-/hasown-2.0.2.tgz"
+-  integrity sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ==
++hasown@^2.0.2, hasown@^2.0.4:
++  version "2.0.4"
++  resolved "https://registry.npmjs.org/hasown/-/hasown-2.0.4.tgz"
++  integrity sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A==
+   dependencies:
+     function-bind "^1.1.2"
+ 
++https-proxy-agent@^5.0.1:
++  version "5.0.1"
++  resolved "https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-5.0.1.tgz"
++  integrity sha512-dFcAjpTQFgoLMzC2VwU+C/CbS7uRL0lWmxDITmqm7C+7F0Odmj6s9l6alZc6AELXhrnggM2CeWSXHGOdX2YtwA==
++  dependencies:
++    agent-base "6"
++    debug "4"
++
+ i18n-jsautotranslate@^3.17.0:
+   version "3.18.0"
+   resolved "https://registry.npmmirror.com/i18n-jsautotranslate/-/i18n-jsautotranslate-3.18.0.tgz"
+@@ -744,89 +662,39 @@ jsonfile@^6.0.1:
+   optionalDependencies:
+     graceful-fs "^4.1.6"
+ 
+-lightningcss-android-arm64@1.32.0:
+-  version "1.32.0"
+-  resolved "https://registry.yarnpkg.com/lightningcss-android-arm64/-/lightningcss-android-arm64-1.32.0.tgz#f033885116dfefd9c6f54787523e3514b61e1968"
+-  integrity sha512-YK7/ClTt4kAK0vo6w3X+Pnm0D2cf2vPHbhOXdoNti1Ga0al1P4TBZhwjATvjNwLEBCnKvjJc2jQgHXH0NEwlAg==
+-
+-lightningcss-darwin-arm64@1.32.0:
+-  version "1.32.0"
+-  resolved "https://registry.yarnpkg.com/lightningcss-darwin-arm64/-/lightningcss-darwin-arm64-1.32.0.tgz#50b71871b01c8199584b649e292547faea7af9b5"
+-  integrity sha512-RzeG9Ju5bag2Bv1/lwlVJvBE3q6TtXskdZLLCyfg5pt+HLz9BqlICO7LZM7VHNTTn/5PRhHFBSjk5lc4cmscPQ==
+-
+-lightningcss-darwin-x64@1.32.0:
+-  version "1.32.0"
+-  resolved "https://registry.yarnpkg.com/lightningcss-darwin-x64/-/lightningcss-darwin-x64-1.32.0.tgz#35f3e97332d130b9ca181e11b568ded6aebc6d5e"
+-  integrity sha512-U+QsBp2m/s2wqpUYT/6wnlagdZbtZdndSmut/NJqlCcMLTWp5muCrID+K5UJ6jqD2BFshejCYXniPDbNh73V8w==
+-
+-lightningcss-freebsd-x64@1.32.0:
+-  version "1.32.0"
+-  resolved "https://registry.yarnpkg.com/lightningcss-freebsd-x64/-/lightningcss-freebsd-x64-1.32.0.tgz#9777a76472b64ed6ff94342ad64c7bafd794a575"
+-  integrity sha512-JCTigedEksZk3tHTTthnMdVfGf61Fky8Ji2E4YjUTEQX14xiy/lTzXnu1vwiZe3bYe0q+SpsSH/CTeDXK6WHig==
+-
+-lightningcss-linux-arm-gnueabihf@1.32.0:
+-  version "1.32.0"
+-  resolved "https://registry.yarnpkg.com/lightningcss-linux-arm-gnueabihf/-/lightningcss-linux-arm-gnueabihf-1.32.0.tgz#13ae652e1ab73b9135d7b7da172f666c410ad53d"
+-  integrity sha512-x6rnnpRa2GL0zQOkt6rts3YDPzduLpWvwAF6EMhXFVZXD4tPrBkEFqzGowzCsIWsPjqSK+tyNEODUBXeeVHSkw==
+-
+-lightningcss-linux-arm64-gnu@1.32.0:
+-  version "1.32.0"
+-  resolved "https://registry.yarnpkg.com/lightningcss-linux-arm64-gnu/-/lightningcss-linux-arm64-gnu-1.32.0.tgz#417858795a94592f680123a1b1f9da8a0e1ef335"
+-  integrity sha512-0nnMyoyOLRJXfbMOilaSRcLH3Jw5z9HDNGfT/gwCPgaDjnx0i8w7vBzFLFR1f6CMLKF8gVbebmkUN3fa/kQJpQ==
+-
+-lightningcss-linux-arm64-musl@1.32.0:
+-  version "1.32.0"
+-  resolved "https://registry.yarnpkg.com/lightningcss-linux-arm64-musl/-/lightningcss-linux-arm64-musl-1.32.0.tgz#6be36692e810b718040802fd809623cffe732133"
+-  integrity sha512-UpQkoenr4UJEzgVIYpI80lDFvRmPVg6oqboNHfoH4CQIfNA+HOrZ7Mo7KZP02dC6LjghPQJeBsvXhJod/wnIBg==
+-
+-lightningcss-linux-x64-gnu@1.32.0:
+-  version "1.32.0"
+-  resolved "https://registry.yarnpkg.com/lightningcss-linux-x64-gnu/-/lightningcss-linux-x64-gnu-1.32.0.tgz#0b7803af4eb21cfd38dd39fe2abbb53c7dd091f6"
+-  integrity sha512-V7Qr52IhZmdKPVr+Vtw8o+WLsQJYCTd8loIfpDaMRWGUZfBOYEJeyJIkqGIDMZPwPx24pUMfwSxxI8phr/MbOA==
+-
+-lightningcss-linux-x64-musl@1.32.0:
+-  version "1.32.0"
+-  resolved "https://registry.yarnpkg.com/lightningcss-linux-x64-musl/-/lightningcss-linux-x64-musl-1.32.0.tgz#88dc8ba865ddddb1ac5ef04b0f161804418c163b"
+-  integrity sha512-bYcLp+Vb0awsiXg/80uCRezCYHNg1/l3mt0gzHnWV9XP1W5sKa5/TCdGWaR/zBM2PeF/HbsQv/j2URNOiVuxWg==
+-
+-lightningcss-win32-arm64-msvc@1.32.0:
+-  version "1.32.0"
+-  resolved "https://registry.yarnpkg.com/lightningcss-win32-arm64-msvc/-/lightningcss-win32-arm64-msvc-1.32.0.tgz#4f30ba3fa5e925f5b79f945e8cc0d176c3b1ab38"
+-  integrity sha512-8SbC8BR40pS6baCM8sbtYDSwEVQd4JlFTOlaD3gWGHfThTcABnNDBda6eTZeqbofalIJhFx0qKzgHJmcPTnGdw==
+-
+-lightningcss-win32-x64-msvc@1.32.0:
+-  version "1.32.0"
+-  resolved "https://registry.yarnpkg.com/lightningcss-win32-x64-msvc/-/lightningcss-win32-x64-msvc-1.32.0.tgz#141aa5605645064928902bb4af045fa7d9f4220a"
+-  integrity sha512-Amq9B/SoZYdDi1kFrojnoqPLxYhQ4Wo5XiL8EVJrVsB8ARoC1PWW6VGtT0WKCemjy8aC+louJnjS7U18x3b06Q==
+-
+-lightningcss@^1.32.0:
+-  version "1.32.0"
+-  resolved "https://registry.yarnpkg.com/lightningcss/-/lightningcss-1.32.0.tgz#b85aae96486dcb1bf49a7c8571221273f4f1e4a9"
+-  integrity sha512-NXYBzinNrblfraPGyrbPoD19C1h9lfI/1mzgWYvXUTe414Gz/X1FD2XBZSZM7rRTrMA8JL3OtAaGifrIKhQ5yQ==
++lightningcss-win32-x64-msvc@1.33.0:
++  version "1.33.0"
++  resolved "https://registry.npmjs.org/lightningcss-win32-x64-msvc/-/lightningcss-win32-x64-msvc-1.33.0.tgz"
++  integrity sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA==
++
++lightningcss@^1.33.0:
++  version "1.33.0"
++  resolved "https://registry.npmjs.org/lightningcss/-/lightningcss-1.33.0.tgz"
++  integrity sha512-WkUDrojuJs0xkgGf2udWxa3yGBRxPtxUkB79i6aCZLRgc7PM8fZe9TosfPDcvEpQZbuFASnHYmRLBLUbmLOIIA==
+   dependencies:
+     detect-libc "^2.0.3"
+   optionalDependencies:
+-    lightningcss-android-arm64 "1.32.0"
+-    lightningcss-darwin-arm64 "1.32.0"
+-    lightningcss-darwin-x64 "1.32.0"
+-    lightningcss-freebsd-x64 "1.32.0"
+-    lightningcss-linux-arm-gnueabihf "1.32.0"
+-    lightningcss-linux-arm64-gnu "1.32.0"
+-    lightningcss-linux-arm64-musl "1.32.0"
+-    lightningcss-linux-x64-gnu "1.32.0"
+-    lightningcss-linux-x64-musl "1.32.0"
+-    lightningcss-win32-arm64-msvc "1.32.0"
+-    lightningcss-win32-x64-msvc "1.32.0"
++    lightningcss-android-arm64 "1.33.0"
++    lightningcss-darwin-arm64 "1.33.0"
++    lightningcss-darwin-x64 "1.33.0"
++    lightningcss-freebsd-x64 "1.33.0"
++    lightningcss-linux-arm-gnueabihf "1.33.0"
++    lightningcss-linux-arm64-gnu "1.33.0"
++    lightningcss-linux-arm64-musl "1.33.0"
++    lightningcss-linux-x64-gnu "1.33.0"
++    lightningcss-linux-x64-musl "1.33.0"
++    lightningcss-win32-arm64-msvc "1.33.0"
++    lightningcss-win32-x64-msvc "1.33.0"
+ 
+ lodash-es@^4.17.15:
+-  version "4.17.21"
+-  resolved "https://registry.npmmirror.com/lodash-es/-/lodash-es-4.17.21.tgz"
+-  integrity sha512-mKnC+QJ9pWVzv+C4/U3rRsHapFfHvQFoFB92e52xeyGMcX6/OlIl78je1u8vePzYZSkkogMPJ2yjxxsb89cxyw==
++  version "4.18.1"
++  resolved "https://registry.npmjs.org/lodash-es/-/lodash-es-4.18.1.tgz"
++  integrity sha512-J8xewKD/Gk22OZbhpOVSwcs60zhd95ESDwezOFuA3/099925PdHJ7OFHNTGtajL3AlZkykD32HykiMo+BIBI8A==
+ 
+ lodash@^4.17.21:
+-  version "4.17.21"
+-  resolved "https://registry.npmmirror.com/lodash/-/lodash-4.17.21.tgz"
+-  integrity sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==
++  version "4.18.1"
++  resolved "https://registry.npmjs.org/lodash/-/lodash-4.18.1.tgz"
++  integrity sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q==
+ 
+ loose-envify@^1.0.0:
+   version "1.4.0"
+@@ -835,16 +703,16 @@ loose-envify@^1.0.0:
+   dependencies:
+     js-tokens "^3.0.0 || ^4.0.0"
+ 
+-magic-string@^0.30.17:
+-  version "0.30.17"
+-  resolved "https://registry.npmjs.org/magic-string/-/magic-string-0.30.17.tgz"
+-  integrity sha512-sNPKHvyjVf7gyjwS4xGTaW/mCnF8wnjtifKBEhxfZ7E/S8tQ0rssrwGNn6q8JH/ohItJfSQp9mBtQYuTlH5QnA==
++magic-string@^0.30.21:
++  version "0.30.21"
++  resolved "https://registry.npmjs.org/magic-string/-/magic-string-0.30.21.tgz"
++  integrity sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==
+   dependencies:
+-    "@jridgewell/sourcemap-codec" "^1.5.0"
++    "@jridgewell/sourcemap-codec" "^1.5.5"
+ 
+ marked@14.0.0:
+   version "14.0.0"
+-  resolved "https://registry.npmmirror.com/marked/-/marked-14.0.0.tgz#79a1477358a59e0660276f8fec76de2c33f35d83"
++  resolved "https://registry.npmjs.org/marked/-/marked-14.0.0.tgz"
+   integrity sha512-uIj4+faQ+MgHgwUW1l2PsPglZLOLOT1uErt06dAPtx2kjteLAkbsd/0FiYg/MGS+i7ZKLb7w2WClxHkzOOuryQ==
+ 
+ math-intrinsics@^1.1.0:
+@@ -857,7 +725,7 @@ mime-db@1.52.0:
+   resolved "https://registry.npmjs.org/mime-db/-/mime-db-1.52.0.tgz"
+   integrity sha512-sPU4uV7dYlvtWJxwwxHD0PuihVNiE7TyAbQ5SWxDCB9mUYvOgroQOwYQQOKPJ8CIbE+1ETVlOoK1UC2nU3gYvg==
+ 
+-mime-types@^2.1.12:
++mime-types@^2.1.35:
+   version "2.1.35"
+   resolved "https://registry.npmjs.org/mime-types/-/mime-types-2.1.35.tgz"
+   integrity sha512-ZDY+bPm5zTTF+YpCrAU9nK0UgICYPT0QtT1NZWFv4s++TNkcgVaT0g6+4R2uI4MjQjzysHB1zxuWL50hzaeXiw==
+@@ -866,16 +734,21 @@ mime-types@^2.1.12:
+ 
+ monaco-editor@^0.54.0:
+   version "0.54.0"
+-  resolved "https://registry.npmmirror.com/monaco-editor/-/monaco-editor-0.54.0.tgz#c0d6ebb46b83f1bef6f67f6aa471e38ba7ef8231"
++  resolved "https://registry.npmjs.org/monaco-editor/-/monaco-editor-0.54.0.tgz"
+   integrity sha512-hx45SEUoLatgWxHKCmlLJH81xBo0uXP4sRkESUpmDQevfi+e7K1VuiSprK6UpQ8u4zOcKNiH0pMvHvlMWA/4cw==
+   dependencies:
+     dompurify "3.1.7"
+     marked "14.0.0"
+ 
+-nanoid@^3.3.11:
+-  version "3.3.11"
+-  resolved "https://registry.npmjs.org/nanoid/-/nanoid-3.3.11.tgz"
+-  integrity sha512-N8SpfPUnUp1bK+PMYW8qSWdl9U+wwNWI4QKxOYDy9JAro3WMX7p2OeVRF9v+347pnakNevPmiHhNmZ2HbFA76w==
++ms@^2.1.3:
++  version "2.1.3"
++  resolved "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz"
++  integrity sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==
++
++nanoid@^3.3.19:
++  version "3.3.20"
++  resolved "https://registry.npmjs.org/nanoid/-/nanoid-3.3.20.tgz"
++  integrity sha512-uKdg2G3GNCKQn9byYOpxbGqrT2fGO5KRt5J/8b3pok8rT6qxGWF6hxMyJiEYtAf+FVyYuD9hRaDqX5uPFYJ4ZQ==
+ 
+ nanopop@^2.1.0:
+   version "2.4.2"
+@@ -892,53 +765,53 @@ picocolors@^1.1.1:
+   resolved "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz"
+   integrity sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==
+ 
+-picomatch@^4.0.4:
+-  version "4.0.4"
+-  resolved "https://registry.yarnpkg.com/picomatch/-/picomatch-4.0.4.tgz#fd6f5e00a143086e074dffe4c924b8fb293b0589"
+-  integrity sha512-QP88BAKvMam/3NxH6vj2o21R6MjxZUAd6nlwAS/pnGvN9IVLocLHxGYIzFhg6fUQ+5th6P4dv4eW9jX3DSIj7A==
++"picomatch@^3 || ^4", picomatch@^4.0.4, picomatch@^4.0.7:
++  version "4.0.7"
++  resolved "https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz"
++  integrity sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==
+ 
+-postcss@^8.5.3, postcss@^8.5.8:
+-  version "8.5.9"
+-  resolved "https://registry.yarnpkg.com/postcss/-/postcss-8.5.9.tgz#f6ee9e0b94f0f19c97d2f172bfbd7fc71fe1cca4"
+-  integrity sha512-7a70Nsot+EMX9fFU3064K/kdHWZqGVY+BADLyXc8Dfv+mTLLVl6JzJpPaCZ2kQL9gIJvKXSLMHhqdRRjwQeFtw==
++postcss@^8.5.28, postcss@^8.5.29:
++  version "8.5.29"
++  resolved "https://registry.npmjs.org/postcss/-/postcss-8.5.29.tgz"
++  integrity sha512-49cGhUbXj8Qenv0iTMxA1cFBzxXoctpC9Ujd77t1WcbJIr6nF/eI7g/8MgxrYldFRuAXvja7xQRwavoW7kgrxQ==
+   dependencies:
+-    nanoid "^3.3.11"
++    nanoid "^3.3.19"
+     picocolors "^1.1.1"
+-    source-map-js "^1.2.1"
++    source-map-js "^1.2.2"
+ 
+-proxy-from-env@^1.1.0:
+-  version "1.1.0"
+-  resolved "https://registry.npmjs.org/proxy-from-env/-/proxy-from-env-1.1.0.tgz"
+-  integrity sha512-D+zkORCbA9f1tdWRK0RaCR3GPv50cMxcrz4X8k5LTSUD1Dkw47mKJEZQNunItRTkWwgtaUSo1RVFRIG9ZXiFYg==
++proxy-from-env@^2.1.0:
++  version "2.1.0"
++  resolved "https://registry.npmjs.org/proxy-from-env/-/proxy-from-env-2.1.0.tgz"
++  integrity sha512-cJ+oHTW1VAEa8cJslgmUZrc+sjRKgAKl3Zyse6+PV38hZe/V6Z14TbCuXcan9F9ghlz4QrFr2c92TNF82UkYHA==
+ 
+ resize-observer-polyfill@^1.5.1:
+   version "1.5.1"
+   resolved "https://registry.npmjs.org/resize-observer-polyfill/-/resize-observer-polyfill-1.5.1.tgz"
+   integrity sha512-LwZrotdHOo12nQuZlHEmtuXdqGoOD0OhaxopaNFxWzInpEgaLWoVuAMbTzixuosCx2nEG58ngzW3vxdWoxIgdg==
+ 
+-rolldown@1.0.0-rc.15:
+-  version "1.0.0-rc.15"
+-  resolved "https://registry.yarnpkg.com/rolldown/-/rolldown-1.0.0-rc.15.tgz#ea3526443b2dbe834e9f8f6c1fde6232ec687170"
+-  integrity sha512-Ff31guA5zT6WjnGp0SXw76X6hzGRk/OQq2hE+1lcDe+lJdHSgnSX6nK3erbONHyCbpSj9a9E+uX/OvytZoWp2g==
++rolldown@~1.2.12:
++  version "1.2.13"
++  resolved "https://registry.npmjs.org/rolldown/-/rolldown-1.2.13.tgz"
++  integrity sha512-/5apOkwWxtACcQtZ5WlrAsKS4JwXVThQPJZ3RqIruRY9UG9M8e0VlXN068xum/JRKA4aIUoJ13ghe/kGCvidiQ==
+   dependencies:
+-    "@oxc-project/types" "=0.124.0"
+-    "@rolldown/pluginutils" "1.0.0-rc.15"
++    "@oxc-project/types" "=0.153.0"
++    "@rolldown/pluginutils" "^1.0.0"
+   optionalDependencies:
+-    "@rolldown/binding-android-arm64" "1.0.0-rc.15"
+-    "@rolldown/binding-darwin-arm64" "1.0.0-rc.15"
+-    "@rolldown/binding-darwin-x64" "1.0.0-rc.15"
+-    "@rolldown/binding-freebsd-x64" "1.0.0-rc.15"
+-    "@rolldown/binding-linux-arm-gnueabihf" "1.0.0-rc.15"
+-    "@rolldown/binding-linux-arm64-gnu" "1.0.0-rc.15"
+-    "@rolldown/binding-linux-arm64-musl" "1.0.0-rc.15"
+-    "@rolldown/binding-linux-ppc64-gnu" "1.0.0-rc.15"
+-    "@rolldown/binding-linux-s390x-gnu" "1.0.0-rc.15"
+-    "@rolldown/binding-linux-x64-gnu" "1.0.0-rc.15"
+-    "@rolldown/binding-linux-x64-musl" "1.0.0-rc.15"
+-    "@rolldown/binding-openharmony-arm64" "1.0.0-rc.15"
+-    "@rolldown/binding-wasm32-wasi" "1.0.0-rc.15"
+-    "@rolldown/binding-win32-arm64-msvc" "1.0.0-rc.15"
+-    "@rolldown/binding-win32-x64-msvc" "1.0.0-rc.15"
++    "@rolldown/binding-android-arm-eabi" "1.2.13"
++    "@rolldown/binding-android-arm64" "1.2.13"
++    "@rolldown/binding-darwin-arm64" "1.2.13"
++    "@rolldown/binding-darwin-x64" "1.2.13"
++    "@rolldown/binding-freebsd-x64" "1.2.13"
++    "@rolldown/binding-linux-arm-gnueabihf" "1.2.13"
++    "@rolldown/binding-linux-arm64-gnu" "1.2.13"
++    "@rolldown/binding-linux-arm64-musl" "1.2.13"
++    "@rolldown/binding-linux-ppc64-gnu" "1.2.13"
++    "@rolldown/binding-linux-s390x-gnu" "1.2.13"
++    "@rolldown/binding-linux-x64-gnu" "1.2.13"
++    "@rolldown/binding-linux-x64-musl" "1.2.13"
++    "@rolldown/binding-openharmony-arm64" "1.2.13"
++    "@rolldown/binding-win32-arm64-msvc" "1.2.13"
++    "@rolldown/binding-win32-x64-msvc" "1.2.13"
+ 
+ scroll-into-view-if-needed@^2.2.25, scroll-into-view-if-needed@^2.2.31:
+   version "2.2.31"
+@@ -959,14 +832,14 @@ simple-swizzle@^0.2.2:
+   dependencies:
+     is-arrayish "^0.3.1"
+ 
+-source-map-js@^1.2.1:
+-  version "1.2.1"
+-  resolved "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz"
+-  integrity sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==
++source-map-js@^1.2.1, source-map-js@^1.2.2:
++  version "1.2.2"
++  resolved "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.2.tgz"
++  integrity sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==
+ 
+ style-mod@^4.0.0, style-mod@^4.1.0:
+   version "4.1.3"
+-  resolved "https://registry.npmmirror.com/style-mod/-/style-mod-4.1.3.tgz#6e9012255bb799bdac37e288f7671b5d71bf9f73"
++  resolved "https://registry.npmjs.org/style-mod/-/style-mod-4.1.3.tgz"
+   integrity sha512-i/n8VsZydrugj3Iuzll8+x/00GH2vnYsk1eomD8QiRrSAeW6ItbCQDtfXCeJHd0iwiNagqjQkvpvREEPtW3IoQ==
+ 
+ stylis@^4.1.3:
+@@ -979,20 +852,15 @@ throttle-debounce@^5.0.0:
+   resolved "https://registry.npmmirror.com/throttle-debounce/-/throttle-debounce-5.0.2.tgz"
+   integrity sha512-B71/4oyj61iNH0KeCamLuE2rmKuTO5byTOSVwECM5FA7TiAiAW+UqTKZ9ERueC4qvgSttUhdmq1mXC3kJqGX7A==
+ 
+-tinyglobby@^0.2.15:
+-  version "0.2.16"
+-  resolved "https://registry.yarnpkg.com/tinyglobby/-/tinyglobby-0.2.16.tgz#1c3b7eb953fce42b226bc5a1ee06428281aff3d6"
+-  integrity sha512-pn99VhoACYR8nFHhxqix+uvsbXineAasWm5ojXoN8xEwK5Kd3/TrhNn1wByuD52UxWRLy8pu+kRMniEi6Eq9Zg==
++tinyglobby@^0.2.17:
++  version "0.2.17"
++  resolved "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.17.tgz"
++  integrity sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==
+   dependencies:
+     fdir "^6.5.0"
+     picomatch "^4.0.4"
+ 
+-tslib@^2.4.0:
+-  version "2.8.1"
+-  resolved "https://registry.yarnpkg.com/tslib/-/tslib-2.8.1.tgz#612efe4ed235d567e8aba5f2a5fab70280ade83f"
+-  integrity sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==
+-
+-typescript@^4.5.0:
++typescript@*, typescript@^4.5.0:
+   version "4.9.5"
+   resolved "https://registry.npmjs.org/typescript/-/typescript-4.9.5.tgz"
+   integrity sha512-1FXk9E2Hm+QzZQ7z+McJiHL4NW1F2EzMu9Nq9i3zAaGqibafqYwCVU6WyWAuyQRRzOlxou8xZSyXLEN8oKj24g==
+@@ -1007,22 +875,22 @@ vite-plugin-vue-type-imports@^0.1.1:
+   resolved "https://registry.npmjs.org/vite-plugin-vue-type-imports/-/vite-plugin-vue-type-imports-0.1.3.tgz"
+   integrity sha512-iF5NgeQc2MZ6wDUS1tnN7rglkWmm+WhK9rCQb3FudsrMTqLazbtN6shyrEcsGBdqYAqH9c5HhiwU3gOIrFcVHA==
+ 
+-vite@^8.0.8:
+-  version "8.0.8"
+-  resolved "https://registry.yarnpkg.com/vite/-/vite-8.0.8.tgz#4e26a9bba77c4b27a00b6b10100a7dab48d546a3"
+-  integrity sha512-dbU7/iLVa8KZALJyLOBOQ88nOXtNG8vxKuOT4I2mD+Ya70KPceF4IAmDsmU0h1Qsn5bPrvsY9HJstCRh3hG6Uw==
++"vite@^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0", vite@^8.0.8:
++  version "8.3.4"
++  resolved "https://registry.npmjs.org/vite/-/vite-8.3.4.tgz"
++  integrity sha512-IftLE8phJhdNRIGNEV4JCCvfNScoZQVfcXaN8TQropWGJtOHcu+iAB9pHcuGvmEb/kddw0LBe/jS8ztdC6xdiQ==
+   dependencies:
+-    lightningcss "^1.32.0"
+-    picomatch "^4.0.4"
+-    postcss "^8.5.8"
+-    rolldown "1.0.0-rc.15"
+-    tinyglobby "^0.2.15"
++    lightningcss "^1.33.0"
++    picomatch "^4.0.7"
++    postcss "^8.5.29"
++    rolldown "~1.2.12"
++    tinyglobby "^0.2.17"
+   optionalDependencies:
+     fsevents "~2.3.3"
+ 
+ vue-codemirror@^6.1.1:
+   version "6.1.1"
+-  resolved "https://registry.npmmirror.com/vue-codemirror/-/vue-codemirror-6.1.1.tgz#246697ef4cfa6b2448dd592ade214bb7ff86611f"
++  resolved "https://registry.npmjs.org/vue-codemirror/-/vue-codemirror-6.1.1.tgz"
+   integrity sha512-rTAYo44owd282yVxKtJtnOi7ERAcXTeviwoPXjIc6K/IQYUsoDkzPvw/JDFtSP6T7Cz/2g3EHaEyeyaQCKoDMg==
+   dependencies:
+     "@codemirror/commands" "6.x"
+@@ -1044,20 +912,20 @@ vue-types@^3.0.0:
+   dependencies:
+     is-plain-object "3.0.1"
+ 
+-vue@^3.1.0, vue@^3.2.0:
+-  version "3.5.14"
+-  resolved "https://registry.npmmirror.com/vue/-/vue-3.5.14.tgz"
+-  integrity sha512-LbOm50/vZFG6Mhy6KscQYXZMQ0LMCC/y40HDJPPvGFQ+i/lUH+PJHR6C3assgOQiXdl6tAfsXHbXYVBZZu65ew==
++vue@^3.0.0, vue@^3.1.0, vue@^3.2.0, vue@^3.2.24, "vue@^3.2.25 || ^3.6.0-rc.10", vue@>=3.0.3, vue@>=3.2.0, vue@3.x:
++  version "3.5.43"
++  resolved "https://registry.npmjs.org/vue/-/vue-3.5.43.tgz"
++  integrity sha512-o5qZoksdnjIKvW1srZ3ab7pcDNYAerBjRe54D0LBLfRdCYFrSgBHVXokMas35czQc0//lmx4/tuY4ZNQ+Rf2Ng==
+   dependencies:
+-    "@vue/compiler-dom" "3.5.14"
+-    "@vue/compiler-sfc" "3.5.14"
+-    "@vue/runtime-dom" "3.5.14"
+-    "@vue/server-renderer" "3.5.14"
+-    "@vue/shared" "3.5.14"
++    "@vue/compiler-dom" "3.5.43"
++    "@vue/compiler-sfc" "3.5.43"
++    "@vue/runtime-dom" "3.5.43"
++    "@vue/server-renderer" "3.5.43"
++    "@vue/shared" "3.5.43"
+ 
+ w3c-keyname@^2.2.4:
+   version "2.2.8"
+-  resolved "https://registry.npmmirror.com/w3c-keyname/-/w3c-keyname-2.2.8.tgz#7b17c8c6883d4e8b86ac8aba79d39e880f8869c5"
++  resolved "https://registry.npmjs.org/w3c-keyname/-/w3c-keyname-2.2.8.tgz"
+   integrity sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ==
+ 
+ warning@^4.0.0:

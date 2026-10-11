@@ -4,24 +4,26 @@
 
 ## 本地环境
 
-推荐使用两个独立 conda 环境：
+新机器完整安装请先看 [复现指南](docs/reproducibility.md)，运行 `py -3.11 scripts/bootstrap-project.py --go-python py --collector-python py`；它同时安装主服务和采集端。
+
+本机于 2026-10-11 恢复为两个独立项目虚拟环境：GoActivity 使用 Python 3.11，we-mp-rss 使用 Python 3.13。当前目录为 `E:\Develop\GoActivity`。桌面管理器会优先找到各服务的 `.venv`，也支持通过 `GOACTIVITY_PYTHON` / `WEMP_RSS_PYTHON` 指定解释器。
 
 ```powershell
-conda create -n we-mp-rss python=3.13
-conda create -n goactivity python=3.11
-conda activate goactivity
-pip install -r requirements.txt
+cd E:\Develop\GoActivity
+.\.venv\Scripts\python.exe -m desktop.app
 ```
 
 初始化数据库（首次运行自动执行 Alembic 迁移）：
 
 ```powershell
-D:\miniconda3\envs\goactivity\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m alembic upgrade head
 ```
 
-当前机器如果 `conda` 不在 PATH，请先从 Anaconda/Miniconda 安装目录初始化 PowerShell，或使用 Anaconda Prompt。
+也可以双击 `start_gui.bat` 启动。其他机器仍可使用两个独立 conda 环境；本机旧的 `D:\miniconda3` 已不存在。恢复详情及认证步骤见 [环境恢复记录](docs/environment-recovery.md)。
 
-Miniconda 路径（当前机器）：`D:\miniconda3`
+后台资源优化、实测内存与采集限频退避机制见 [运行优化记录](docs/runtime-optimization.md)。
+
+采集端定制源码通过 [版本化补丁](patches/README.md) 随本仓库保存；新机器安装时先应用补丁，再构建采集端前端。
 
 ## 自动检测推文链路
 
@@ -36,14 +38,15 @@ Miniconda 路径（当前机器）：`D:\miniconda3`
 | ③ AI 抽取 | GoActivity | Vision API 提取活动信息 | 随拉取触发 |
 | ④ 同步飞书 | GoActivity → 飞书 | lark-cli 写入多维表格 | 随抽取触发 |
 | ⑤ 日报/周报 | GoActivity → 飞书 | `ReportScheduler` 发送 | 每天 9:00 / 每周一 9:00 |
+| ⑥ 自动巡检 | GoActivity ↔ 飞书 | 公众号 SLA、失败重试、Base 对账与告警 | 30 分钟 / 每日 3:30 |
 
 ### 一键启动（手动）
 
 推荐使用新的桌面管理器（`python -m desktop.app`），可同时管理两个服务：
 
 ```powershell
-cd E:\cctry\GoActivity
-python -m desktop.app
+cd E:\Develop\GoActivity
+.\.venv\Scripts\python.exe -m desktop.app
 ```
 
 托盘程序会自动启动 GoActivity（端口 8000）和 we-mp-rss（端口 8001），并在托盘图标上显示双状态指示灯。
@@ -52,12 +55,13 @@ python -m desktop.app
 
 ```powershell
 # 终端 1：启动 we-mp-rss
-cd E:\cctry\GoActivity\we-mp-rss
-D:\miniconda3\envs\we-mp-rss\python.exe main.py -job True -init True
+cd E:\Develop\GoActivity\we-mp-rss
+[Environment]::SetEnvironmentVariable("WE_RSS.AUTH", "True", "Process")
+.\.venv\Scripts\python.exe main.py -job True -init True
 
 # 终端 2：启动 GoActivity
-cd E:\cctry\GoActivity
-D:\miniconda3\envs\goactivity\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+cd E:\Develop\GoActivity
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 健康检查：
@@ -86,6 +90,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-autostart.ps1
 1. 访问 `http://localhost:8001` → 消息任务 → 新建
 2. webhook 地址：`http://localhost:8000/webhooks/we-mp-rss`
 3. 格式选 JSON
+
+同机访问 `127.0.0.1` 无需额外认证。如果 we-mp-rss 部署在其他机器，需在 GoActivity 配置 `WE_MP_RSS_WEBHOOK_TOKEN`，并让发送方携带 `X-GoActivity-Webhook-Token` 请求头；未配置令牌时远程 Webhook 会被拒绝。
 
 ### 飞书机器人（AI 对话查询）
 
@@ -148,7 +154,14 @@ http://localhost:8001
 - 提供配置自检、同步日志、同步任务状态接口，便于排障。
 - 提供结构化日报/周报（按时间筛选、分类统计、活动列表），支持发送到飞书群/用户。
 - 自动同步服务：定时从 we-mp-rss 拉取新文章、Vision 抽取、同步到飞书（每小时）。
-- 飞书视图自动创建/更新（11 个视图，支持过滤、排序、分组）。
+- 自动同步统计区分“远端扫描、候选文章、实际处理、实际新建、策略过滤、处理失败、飞书成功/失败”；过滤文章会保存轻量决策记录，避免每小时重复处理同一批历史文章。
+- 飞书失败同步持久化记录错误与下次重试时间，按指数退避自动重试，并在超过上限后进入人工待办。
+- 公众号健康度从完整订阅列表出发，区分“从未采集、数据过期、来源近期无更新、数据新鲜”；优先公众号默认每 30 分钟触发采集，并在 2 分钟后接续完整同步。
+- 每日飞书对账分页核对本地记录与 Base；自动修复仅补建明确缺失记录，字段漂移和附件缺失只告警、不覆盖。
+- 自动化告警覆盖连续同步失败、文章处理失败、失败重试耗尽、待办积压、低置信度、公众号过期与飞书对账差异，并按稳定问题类型做冷却去重。
+- 自动化健康检查会核验调度任务是否注册、下一次执行时间与同步延迟；飞书定时对账默认只读检测，人工修复需经过稳定快照和二次读取确认。
+- 手动同步、定时同步和启动归档共享单一执行锁，避免完整链路重叠运行。
+- 飞书视图自动创建/更新（13 个视图，包含活动日历和活动海报画廊，支持过滤、排序、分组、时间栏和封面）；重建时先验证替代视图，再移除旧视图。
 - 事件去重：基于标题+时间+地点的 SHA-256 去重键，避免同一活动重复入库。
 - 抽取后校验：自动修正非法分类、超范围置信度、不合理时间。
 - 图片过滤：自动排除装饰性图片（<10KB、<80px、极端比例），大图（≥200×200px）跳过文件大小检查，只保留有效海报图。
@@ -159,7 +172,7 @@ http://localhost:8001
 - 飞书机器人：自然语言查询、速率限制、对话历史。
 - CI pipeline（GitHub Actions：pytest + import check）。
 - Web 管理后台：统计仪表板、事件列表、同步日志、快捷操作、活动详情、搜索、时间筛选、待办事项（editorial campus bulletin 设计风格）。
-- Web 管理后台新增“运行概览 / 详细设置”双层结构：总览页优先展示链路健康、今日/未来活动、最近同步；系统页拆分为运行概览与详细设置标签，避免单页过长。
+- Web 管理后台新增“运行概览 / 详细设置”双层结构：总览页优先展示链路健康、今日/未来活动、同步结果；系统页拆分为运行概览与详细设置标签，避免单页过长。
 - 公众号管理页支持真实账号卡片展示：兼容 we-mp-rss 的 `data.list` 返回结构，展示头像、简介、更新时间与操作按钮。
 - 系统托盘管理器：同时管理 GoActivity + WeRSS 双服务，独立启停/重启，独立开机自启（注册表），双状态指示灯托盘图标，统一状态窗口。
 - 同步进度 UI：触发同步后弹出进度窗口，轮询显示拉取/抽取/同步阶段，完成后展示结果统计。
@@ -210,6 +223,12 @@ http://localhost:8001
 - `GET /dashboard/sync-runs` — 仪表板同步运行记录
 - `GET /dashboard/feishu-link` — 飞书多维表格链接配置
 - `GET /dashboard/pipeline-status` — 数据管道状态（we-mp-rss 状态、最新入库、最后同步、归档统计）
+- `GET /dashboard/accounts-health` — 公众号新鲜度与 SLA（兼容入口）
+- `GET /automation/accounts-health` — 公众号级文章/活动产出与 SLA
+- `GET /automation/status` — 调度任务体征与维护任务结果
+- `GET /automation/feishu-reconcile` — 只读预览本地与飞书 Base 差异
+- `POST /automation/feishu-reconcile` — 仅补建飞书缺失记录（写接口鉴权）
+- `POST /automation/collect-priority` — 立即触发优先公众号采集（写接口鉴权）
 - `GET /accounts` — 列出已订阅公众号
 - `GET /accounts/search/{kw}` — 搜索公众号（微信搜索）
 - `POST /accounts` — 添加公众号（代理到 we-mp-rss）
@@ -261,7 +280,7 @@ VISION_API_BASE_URL=https://open.bigmodel.cn/api/paas/v4
 VISION_API_MODEL=glm-4.6v
 VISION_API_TIMEOUT_SECONDS=60
 ```
-依赖：`pip install rapidocr_onnxruntime`
+依赖：`pip install -r requirements-ocr.txt`（或单独执行 `pip install rapidocr_onnxruntime`）
 
 **方案B：全多模态 API**（效果最好，但贵且慢）
 ```env
@@ -334,6 +353,27 @@ POST /events/{event_id}/sync-feishu
 GET /sync/logs?target=feishu_event
 ```
 
+### 自动化守护
+
+```env
+AUTO_SYNC_STALE_MINUTES=180
+FEISHU_SYNC_RETRY_MAX=6
+FEISHU_SYNC_RETRY_BASE_MINUTES=15
+PRIORITY_ACCOUNTS=
+PRIORITY_COLLECTION_CRON=*/30 * * * *
+ACCOUNT_STALE_HOURS=36
+FEISHU_RECONCILE_ENABLED=true
+FEISHU_RECONCILE_CRON=30 3 * * *
+FEISHU_RECONCILE_MAX_MISSING_RATIO=0.2
+FEISHU_RECONCILE_SNAPSHOT_HOURS=24
+AUTOMATION_ALERTS_ENABLED=true
+AUTOMATION_ALERT_COOLDOWN_HOURS=6
+```
+
+`PRIORITY_ACCOUNTS` 使用逗号分隔公众号名称；为空时表示全部订阅。自动告警复用日报/周报的飞书收件人配置。对账写操作保持保守策略，只补建已明确从 Base 消失的活跃记录，隐藏、过滤或归档等终态记录不会恢复。
+
+配置或调度变更后，优先检查 `GET /automation/status`：它会返回自动同步、优先公众号采集、飞书对账和日报/周报任务是否注册、下一次执行时间、同步延迟以及维护结果。定时飞书对账默认只读；管理页的“修复缺失”只有在缺失比例不超过阈值、快照仍在有效期内且二次读取结果一致时才会开放。
+
 ## 排障顺序
 
 建议按这个顺序排障：
@@ -349,7 +389,7 @@ GET /sync/logs?target=feishu_event
 - `GET /diagnostics/config`
   - 看配置是否缺失
 - `GET /sync/runs/latest/{source}`
-  - 看某个来源最近一次同步任务是否成功
+  - 看某个来源最新一次同步任务是否成功
 - `GET /sync/runs/{run_id}`
   - 看单次任务详情
 - `GET /sync/summary`

@@ -17,15 +17,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\locate-conda.ps1
 
 If that script cannot find `conda.exe`, the `C:\Users\threeyang\.anaconda` directory is likely only Anaconda configuration/keyring data, not a full Miniconda/Anaconda installation.
 
-## Tray Manager (Recommended)
+## Desktop Manager (Recommended)
 
-The system tray application (`gui_manager.py`) manages both services:
+The PySide6 desktop manager manages both services:
 
 ```powershell
-python gui_manager.py
+python -m desktop.app
 ```
 
 This starts GoActivity (port 8000) and we-mp-rss (port 8001) automatically, with a dual-status tray icon and right-click menu for independent control.
+The legacy `gui_manager.py` remains available when compatibility with the older tray entry is required.
 
 ### Auto-restart
 
@@ -162,3 +163,25 @@ GoActivity now distinguishes between:
 - task-level sync run status: `GET /sync/runs`, `GET /sync/runs/summary`, `GET /sync/runs/latest/{source}`, `GET /sync/runs/{run_id}`
 
 Use sync runs first when you need to know whether a specific pull operation succeeded or failed.
+
+## Automation Health Checks
+
+自动化链路出现延迟或结果异常时，按以下顺序检查：
+
+```text
+GET  http://127.0.0.1:8000/health
+GET  http://127.0.0.1:8000/automation/status
+GET  http://127.0.0.1:8000/automation/accounts-health
+GET  http://127.0.0.1:8000/automation/feishu-reconcile
+GET  http://127.0.0.1:8000/sync/status
+```
+
+`/automation/status` 用于确认必需调度任务已注册、下一次执行时间和维护结果；`/automation/accounts-health` 从完整订阅列表计算公众号新鲜度，`never_collected` 表示尚未成功采集，不等同于公众号不存在；`/automation/feishu-reconcile` 是只读差异预览。
+
+只有明确需要人工修复时才调用：
+
+```text
+POST http://127.0.0.1:8000/automation/feishu-reconcile
+```
+
+该接口只允许补建本地仍存在、飞书明确缺失的活跃记录。缺失比例过高、快照过期或二次读取不一致时会安全拒绝修复，避免一次异常读取造成批量重复写入。优先公众号可以通过 `POST /automation/collect-priority` 触发，接口会返回选中、尝试、成功和失败数量。

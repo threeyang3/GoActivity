@@ -22,19 +22,46 @@ SERVICE_HOST = "127.0.0.1"
 RSS_PORT = 8001
 RSS_HOST = "127.0.0.1"
 RSS_DIR = Path(__file__).parent.parent / "we-mp-rss"
+PROJECT_ROOT = Path(__file__).parent.parent
 
 MAX_AUTO_RESTARTS = 3
 RESTART_BACKOFF_BASE = 5  # seconds
 
 
-def find_rss_python() -> str:
-    """Find the Python interpreter for we-mp-rss."""
-    # Check local venv first
-    for sub in (".venv", "venv"):
-        p = RSS_DIR / sub / "Scripts" / "python.exe"
-        if p.exists():
-            return str(p)
+def _find_python(env_var: str, project_dir: Path, conda_env: str) -> str:
+    """Resolve a service interpreter without inheriting an incompatible GUI Python."""
+    configured = os.environ.get(env_var)
+    if configured and Path(configured).is_file():
+        return configured
+
+    candidates = [
+        *(project_dir / sub / "Scripts" / "python.exe" for sub in (".venv", "venv")),
+        Path(rf"D:\miniconda3\envs\{conda_env}\python.exe"),
+        Path.home() / "miniconda3" / "envs" / conda_env / "python.exe",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
     return sys.executable
+
+
+def find_goactivity_python() -> str:
+    """Find the supported Python interpreter for GoActivity."""
+    return _find_python("GOACTIVITY_PYTHON", PROJECT_ROOT, "goactivity")
+
+
+def find_rss_python() -> str:
+    """Find the supported Python interpreter for we-mp-rss."""
+    return _find_python("WEMP_RSS_PYTHON", RSS_DIR, "we-mp-rss")
+
+
+def service_environment() -> dict[str, str]:
+    """Bound native compute pools before importing numerical libraries."""
+    env = os.environ.copy()
+    for key in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        env.setdefault(key, "1")
+    env.setdefault("PYTHONUTF8", "1")
+    return env
 
 
 def check_port(host: str, port: int) -> bool:
@@ -54,8 +81,16 @@ def check_health(host: str, port: int, path: str = "/health", timeout: int = 3) 
         url = f"http://{host}:{port}{path}"
         req = urllib.request.Request(url, method='GET')
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read())
-            return data.get("status", "error")
+            body = resp.read()
+            # Some services expose only a docs/readiness URL.  A successful HTTP
+            # response is healthy even when its body is HTML or has no status key.
+            try:
+                data = json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return "ok"
+            if isinstance(data, dict) and "status" in data:
+                return str(data["status"])
+            return "ok"
     except Exception:
         return "unreachable"
 
@@ -116,7 +151,7 @@ class ServiceController:
             pass
         return open(path, 'a', encoding='utf-8')
 
-    def start_goactivity(self) -> bool:
+    def start_goactivity(self, *, start_monitor: bool = True) -> bool:
         """Start GoActivity service."""
         svc = self.goactivity
         if svc.running:
@@ -130,12 +165,13 @@ class ServiceController:
             self._notify(svc)
             return True
 
-        cmd = [sys.executable, 'start_service.py', '--start', '--host', svc.host, '--port', str(svc.port)]
+        cmd = [find_goactivity_python(), '-m', 'uvicorn', 'app.main:app', '--host', svc.host, '--port', str(svc.port)]
         try:
             svc._log_handle = self._open_rotating_log(svc.log_path)
             svc.process = subprocess.Popen(
-                cmd, stdout=svc._log_handle, stderr=subprocess.STDOUT,
+                cmd, cwd=str(PROJECT_ROOT), stdout=svc._log_handle, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
+                env=service_environment(),
             )
             svc.running = True
             svc.managed = True
@@ -152,9 +188,10 @@ class ServiceController:
                 svc.status = "starting"
 
             # Start monitor
-            t = threading.Thread(target=self._monitor_service, args=(svc,), daemon=True)
-            t.start()
-            self._monitor_threads.append(t)
+            if start_monitor:
+                t = threading.Thread(target=self._monitor_service, args=(svc,), daemon=True)
+                t.start()
+                self._monitor_threads.append(t)
             return True
         except Exception as e:
             logger.error("Failed to start %s: %s", svc.name, e)
@@ -172,7 +209,7 @@ class ServiceController:
         time.sleep(1)
         self.start_goactivity()
 
-    def start_werss(self) -> bool:
+    def start_werss(self, *, start_monitor: bool = True) -> bool:
         """Start WeRSS service."""
         svc = self.werss
         if svc.running:
@@ -187,11 +224,14 @@ class ServiceController:
 
         rss_python = find_rss_python()
         cmd = [rss_python, 'main.py', '-job', 'True', '-init', 'True']
+        child_env = service_environment()
+        child_env.setdefault("WE_RSS.AUTH", "True")
         try:
             svc._log_handle = self._open_rotating_log(svc.log_path)
             svc.process = subprocess.Popen(
                 cmd, cwd=str(RSS_DIR), stdout=svc._log_handle, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
+                env=child_env,
             )
             svc.running = True
             svc.managed = True
@@ -206,9 +246,10 @@ class ServiceController:
             else:
                 svc.status = "starting"
 
-            t = threading.Thread(target=self._monitor_service, args=(svc,), daemon=True)
-            t.start()
-            self._monitor_threads.append(t)
+            if start_monitor:
+                t = threading.Thread(target=self._monitor_service, args=(svc,), daemon=True)
+                t.start()
+                self._monitor_threads.append(t)
             return True
         except Exception as e:
             logger.error("Failed to start %s: %s", svc.name, e)
@@ -234,7 +275,15 @@ class ServiceController:
             return
         try:
             if svc.process:
-                svc.process.terminate()
+                if sys.platform == 'win32':
+                    # Windows venv launchers and the bot spawn child processes.
+                    subprocess.run(
+                        ['taskkill', '/PID', str(svc.process.pid), '/T', '/F'],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW, timeout=10,
+                    )
+                else:
+                    svc.process.terminate()
                 svc.process.wait(timeout=5)
         except Exception:
             if svc.process:
@@ -335,9 +384,9 @@ class ServiceController:
             return False
 
         if svc.name == "GoActivity":
-            self.start_goactivity()
+            self.start_goactivity(start_monitor=False)
         else:
-            self.start_werss()
+            self.start_werss(start_monitor=False)
 
         if svc.status == "running":
             svc.restart_count = 0

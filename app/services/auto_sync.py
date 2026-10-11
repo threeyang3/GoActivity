@@ -157,6 +157,11 @@ class AutoSyncService:
             client = WeMpRssClient()
             article_service = ArticleService(db)
 
+            status_reader = getattr(client, "collection_status", lambda: {})
+            if status_reader().get("cooldown"):
+                logger.info("Collector is cooling down; skipping dry-spell collection")
+                return []
+
             # 1. 获取所有启用的消息任务
             tasks = client.list_message_tasks()
             if not tasks:
@@ -203,6 +208,13 @@ class AutoSyncService:
                         len(new_candidates), datetime.now() - wait_start,
                     )
                     return new_candidates
+                collection = status_reader()
+                if collection.get("cooldown") or (
+                    collection and not collection.get("queue_pending")
+                    and not collection.get("active_count") and not collection.get("pending_count")
+                ):
+                    logger.info("Collection finished or entered cooldown; ending candidate wait")
+                    return []
 
             logger.warning("Collection trigger timed out without new candidates")
             return []

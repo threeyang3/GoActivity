@@ -16,17 +16,18 @@ The desktop manager provides:
 - Dual-status tray icon (green/red dots for each service)
 - Unified status window showing both services' health
 
-The end-to-end flow currently verified on this machine is:
+The end-to-end flow previously verified in the old environment is:
 
 `we-mp-rss -> GoActivity -> image preservation -> OCR/Vision extraction -> Feishu Bitable -> daily report`
 
 ## Current Local Status
-The current Windows machine has already been configured and verified.
+The local Python environments and services were restored on 2026-10-11. Historical end-to-end verification below does not establish current external authorization.
 
-- Workspace root: `E:\cctry\GoActivity`
-- Miniconda root: `D:\miniconda3`
-- `goactivity` env: Python `3.11`
-- `we-mp-rss` env: Python `3.13`
+- Workspace root: `E:\Develop\GoActivity`
+- GoActivity Python: `.venv\Scripts\python.exe` (Python `3.11.17`)
+- we-mp-rss Python: `we-mp-rss\.venv\Scripts\python.exe` (Python `3.13.16`)
+- Old Miniconda root `D:\miniconda3` is absent; use the dedicated project virtual environments.
+- Managed Python base installations: `E:\Develop\.runtimes\python`; keep this directory because the virtual environments depend on it.
 - GoActivity service: `http://127.0.0.1:8000`
 - we-mp-rss service: `http://127.0.0.1:8001`
 - Feishu sync path: `lark-cli`
@@ -34,7 +35,9 @@ The current Windows machine has already been configured and verified.
 - Feishu target table: `活动库`
 - Feishu attachment field for posters: `海报附件`
 
-As of the latest local verification (2026-07-15):
+Local verification (2026-10-11): both services respond over HTTP, 9 subscriptions are readable, Chromium launches headlessly, and RapidOCR performs real inference. All 229 GoActivity tests pass with isolated storage/mock providers; 7 collector tests pass. Feishu CLI user and bot identities verify successfully, and the target table is readable (136 records, 93 with attachments). WeChat authorization was renewed and expires on 2026-10-15 16:49:29, but collection currently encounters upstream `200013` rate limiting. The collector now persists 30/60/120-minute cooldowns; do not bypass these or repeatedly trigger collection. Desktop services launch directly with bounded numerical thread defaults; OCR and export dependencies load on demand. See [docs/environment-recovery.md](docs/environment-recovery.md) and [docs/runtime-optimization.md](docs/runtime-optimization.md).
+
+Historical verification (2026-07-15):
 
 - all local `Event` rows are synced to Feishu
 - poster images are uploaded as real Feishu attachments
@@ -85,7 +88,7 @@ As of the latest local verification (2026-07-15):
 - `scripts/`
   Management scripts for we-mp-rss (start/stop/status/install-task) and GoActivity setup.
 - `tests/`
-  Pytest suite (210 tests). `conftest.py` uses set-difference cleanup: records existing IDs before each test, deletes only new ones after.
+  Pytest suite (229 tests verified on 2026-10-11). Use an isolated DATABASE_URL and STORAGE_DIR for tests. `conftest.py` uses set-difference cleanup: records existing IDs before each test, deletes only new ones after.
 - `.github/workflows/ci.yml`
   CI pipeline: pytest on push/PR to main.
 - `we-mp-rss/`
@@ -134,31 +137,31 @@ Important values already used by the running project include:
 Never print or commit secret values in docs, tests, or logs.
 
 ## Run Commands
-Use the dedicated conda envs instead of relying on global PATH.
+Use the dedicated project virtual environments instead of relying on global PATH. Run these commands from the workspace root, except the collector command which must run from `we-mp-rss`.
 
 GoActivity:
 
 ```powershell
-D:\miniconda3\envs\goactivity\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+E:\Develop\GoActivity\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 we-mp-rss:
 
 ```powershell
-D:\miniconda3\envs\we-mp-rss\python.exe main.py -job True -init True
+E:\Develop\GoActivity\we-mp-rss\.venv\Scripts\python.exe main.py -job True -init True
 ```
 
 Tests:
 
 ```powershell
-D:\miniconda3\envs\goactivity\python.exe -m pytest -q
+E:\Develop\GoActivity\.venv\Scripts\python.exe -m pytest -q
 ```
 
 Alembic migrations:
 
 ```powershell
-D:\miniconda3\envs\goactivity\python.exe -m alembic upgrade head
-D:\miniconda3\envs\goactivity\python.exe -m alembic revision --autogenerate -m "description"
+E:\Develop\GoActivity\.venv\Scripts\python.exe -m alembic upgrade head
+E:\Develop\GoActivity\.venv\Scripts\python.exe -m alembic revision --autogenerate -m "description"
 ```
 
 ## Feishu Sync Notes
@@ -315,7 +318,7 @@ If touching Feishu sync, verify both:
 - APScheduler is pinned to `<4.0.0` (4.x has breaking API changes).
 - **Python 3.14 compatibility**: `asyncio.get_event_loop()` no longer auto-creates an event loop. The `we-mp-rss/main.py` has been patched to use `asyncio.new_event_loop()` + `asyncio.set_event_loop()` before `asyncio.run()`.
 - **Playwright dependency**: we-mp-rss requires Playwright browsers installed in its conda env (`playwright install chromium`). Without this, WeChat login QR code generation will fail.
-- **Conda env required for we-mp-rss**: the desktop manager and legacy `gui_manager.py` use `D:\miniconda3\envs\we-mp-rss\python.exe` to start we-mp-rss. Do not use system Python (missing dependencies like python-docx).
+- **Dedicated environment required for we-mp-rss**: the desktop manager and legacy `gui_manager.py` prefer `we-mp-rss\.venv\Scripts\python.exe`, retaining old conda locations as fallback. Do not use system Python (missing dependencies like python-docx).
 - **we-mp-rss Cookie 自动续期**: `we-mp-rss/driver/auth.py` 中 `renew_auth()` 每 6 小时用存储的 cookie 访问微信平台刷新会话，需 `WE_RSS.AUTH=True` 环境变量。启动脚本已配置。
 - **we-mp-rss 定时采集**: 数据库中已有 MessageTask（每天 9:00 采集所有公众号）。添加新公众号后自动纳入，无需额外配置。we-mp-rss 的增量获取靠数据库去重（url+id），每次拉最新页。
 - **we-mp-rss 过滤规则**: `filter_rules` 表是 HTML 内容清洗（移除广告/页脚等 DOM），不是文章筛选。不支持按标题/关键词过滤文章。
@@ -327,7 +330,7 @@ If touching Feishu sync, verify both:
 - **RapidOCR**: `OCR_PROVIDER=rapid` 使用本地 RapidOCR（`pip install rapidocr_onnxruntime`），免费、快速（<1秒/张）。
 
 ## Handoff Notes
-When continuing work, assume the following are already true unless a later failure shows otherwise:
+The following notes describe the historical working setup. On this restored machine, check external authorization and data freshness before assuming those integrations are operational:
 
 - `we-mp-rss` subscription and authorization were previously completed
 - real articles from `北大团委`, `北京大学百周年纪念讲堂`, `北京大学人文社会科学研究院`, `北京大学人文学部` have been ingested
@@ -337,7 +340,7 @@ When continuing work, assume the following are already true unless a later failu
 - 13 Feishu main views are created and verified in the live Base; calendar timebar and gallery cover settings are maintained together with visible fields
 - daily/weekly reports are sent to user's Feishu via `FEISHU_REPORT_USER_ID`
 - Alembic migrations are up to date (8 migrations in repository)
-- 210 tests passing, CI pipeline configured
+- 229 tests passing in isolated storage, CI pipeline configured (2026-10-11)
 - `/automation/status` confirms required scheduler jobs are registered and exposes maintenance results
 - scheduled Feishu reconciliation is detect-only; repair requires a stable snapshot and an independent second read
 - Web management UI available at `http://localhost:8000/` (editorial campus bulletin design)
@@ -348,4 +351,4 @@ When continuing work, assume the following are already true unless a later failu
 
 If you need repository-specific guidance for the collector service itself, also read:
 
-- [we-mp-rss/AGENTS.md](E:/cctry/GoActivity/we-mp-rss/AGENTS.md)
+- [we-mp-rss/AGENTS.md](E:/Develop/GoActivity/we-mp-rss/AGENTS.md)

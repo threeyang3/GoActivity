@@ -8,7 +8,9 @@ echo ========================================
 echo.
 
 set "SCRIPT_DIR=%~dp0"
+cd /d "%SCRIPT_DIR%"
 set "PYTHON_EXE=%GOACTIVITY_PYTHON%"
+if not defined PYTHON_EXE if exist "%SCRIPT_DIR%.venv\Scripts\python.exe" set "PYTHON_EXE=%SCRIPT_DIR%.venv\Scripts\python.exe"
 if not defined PYTHON_EXE set "PYTHON_EXE=D:\miniconda3\envs\goactivity\python.exe"
 
 :: 检查 Python 环境

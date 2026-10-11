@@ -55,6 +55,15 @@ def find_rss_python() -> str:
     return _find_python("WEMP_RSS_PYTHON", RSS_DIR, "we-mp-rss")
 
 
+def service_environment() -> dict[str, str]:
+    """Bound native compute pools before importing numerical libraries."""
+    env = os.environ.copy()
+    for key in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        env.setdefault(key, "1")
+    env.setdefault("PYTHONUTF8", "1")
+    return env
+
+
 def check_port(host: str, port: int) -> bool:
     """Check if a port is in use."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -156,12 +165,13 @@ class ServiceController:
             self._notify(svc)
             return True
 
-        cmd = [find_goactivity_python(), 'start_service.py', '--start', '--host', svc.host, '--port', str(svc.port)]
+        cmd = [find_goactivity_python(), '-m', 'uvicorn', 'app.main:app', '--host', svc.host, '--port', str(svc.port)]
         try:
             svc._log_handle = self._open_rotating_log(svc.log_path)
             svc.process = subprocess.Popen(
-                cmd, stdout=svc._log_handle, stderr=subprocess.STDOUT,
+                cmd, cwd=str(PROJECT_ROOT), stdout=svc._log_handle, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
+                env=service_environment(),
             )
             svc.running = True
             svc.managed = True
@@ -214,7 +224,7 @@ class ServiceController:
 
         rss_python = find_rss_python()
         cmd = [rss_python, 'main.py', '-job', 'True', '-init', 'True']
-        child_env = os.environ.copy()
+        child_env = service_environment()
         child_env.setdefault("WE_RSS.AUTH", "True")
         try:
             svc._log_handle = self._open_rotating_log(svc.log_path)
@@ -265,7 +275,15 @@ class ServiceController:
             return
         try:
             if svc.process:
-                svc.process.terminate()
+                if sys.platform == 'win32':
+                    # Windows venv launchers and the bot spawn child processes.
+                    subprocess.run(
+                        ['taskkill', '/PID', str(svc.process.pid), '/T', '/F'],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW, timeout=10,
+                    )
+                else:
+                    svc.process.terminate()
                 svc.process.wait(timeout=5)
         except Exception:
             if svc.process:

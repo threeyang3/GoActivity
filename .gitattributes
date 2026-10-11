@@ -1,0 +1,2 @@
+# Preserve the collector's mixed line endings inside its unified patch.
+patches/*.patch -text

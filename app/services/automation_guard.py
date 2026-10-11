@@ -129,6 +129,12 @@ class AutomationGuardService:
                     timeout=30,
                 )
                 response.raise_for_status()
+                payload = response.json()
+                if isinstance(payload, dict) and payload.get("code", 0) != 0:
+                    if payload.get("code") == 42901:
+                        skipped.append(item.get("mp_name") or mp_id)
+                        continue
+                    raise ValueError(str(payload.get("message") or "采集请求未被接受"))
                 triggered.append(item.get("mp_name") or mp_id)
             except Exception as exc:
                 failed.append({"mp_name": item.get("mp_name") or mp_id, "error": str(exc)[:200]})

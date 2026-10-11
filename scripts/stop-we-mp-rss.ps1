@@ -4,7 +4,7 @@
 $ErrorActionPreference = "Stop"
 
 # Config
-$WE_MP_RSS_DIR = "E:\cctry\GoActivity\we-mp-rss"
+$WE_MP_RSS_DIR = Join-Path (Split-Path $PSScriptRoot -Parent) "we-mp-rss"
 $PID_FILE = "$WE_MP_RSS_DIR\.pid"
 
 Write-Host "========================================" -ForegroundColor Cyan

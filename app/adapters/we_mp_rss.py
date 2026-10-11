@@ -121,6 +121,19 @@ class WeMpRssClient:
         payload = response.json()
         return payload.get("data", {}).get("list", [])
 
+    def collection_status(self) -> dict[str, Any]:
+        """Optional endpoint: old collectors remain compatible."""
+        try:
+            response = requests.get(
+                f"{self.base_url}{self.api_base}/task-queue/collection/status",
+                headers=self._auth_headers(), timeout=5,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            return payload.get("data", {}) if payload.get("code") == 0 else {}
+        except (requests.RequestException, ValueError):
+            return {}
+
     def trigger_message_task(self, task_id: str) -> dict[str, Any]:
         """触发指定的消息任务执行（立即采集文章）。
 

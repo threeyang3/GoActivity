@@ -4,25 +4,24 @@
 
 ## 本地环境
 
-推荐使用两个独立 conda 环境：
+本机于 2026-10-11 恢复为两个独立项目虚拟环境：GoActivity 使用 Python 3.11，we-mp-rss 使用 Python 3.13。当前目录为 `E:\Develop\GoActivity`。桌面管理器会优先找到各服务的 `.venv`，也支持通过 `GOACTIVITY_PYTHON` / `WEMP_RSS_PYTHON` 指定解释器。
 
 ```powershell
-conda create -n we-mp-rss python=3.13
-conda create -n goactivity python=3.11
-conda activate goactivity
-pip install -r requirements.txt
-pip install -r requirements-ocr.txt
+cd E:\Develop\GoActivity
+.\.venv\Scripts\python.exe -m desktop.app
 ```
 
 初始化数据库（首次运行自动执行 Alembic 迁移）：
 
 ```powershell
-D:\miniconda3\envs\goactivity\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m alembic upgrade head
 ```
 
-当前机器如果 `conda` 不在 PATH，请先从 Anaconda/Miniconda 安装目录初始化 PowerShell，或使用 Anaconda Prompt。
+也可以双击 `start_gui.bat` 启动。其他机器仍可使用两个独立 conda 环境；本机旧的 `D:\miniconda3` 已不存在。恢复详情及认证步骤见 [环境恢复记录](docs/environment-recovery.md)。
 
-Miniconda 路径（当前机器）：`D:\miniconda3`
+后台资源优化、实测内存与采集限频退避机制见 [运行优化记录](docs/runtime-optimization.md)。
+
+采集端定制源码通过 [版本化补丁](patches/README.md) 随本仓库保存；新机器安装时先应用补丁，再构建采集端前端。
 
 ## 自动检测推文链路
 
@@ -44,8 +43,8 @@ Miniconda 路径（当前机器）：`D:\miniconda3`
 推荐使用新的桌面管理器（`python -m desktop.app`），可同时管理两个服务：
 
 ```powershell
-cd E:\cctry\GoActivity
-python -m desktop.app
+cd E:\Develop\GoActivity
+.\.venv\Scripts\python.exe -m desktop.app
 ```
 
 托盘程序会自动启动 GoActivity（端口 8000）和 we-mp-rss（端口 8001），并在托盘图标上显示双状态指示灯。
@@ -54,12 +53,13 @@ python -m desktop.app
 
 ```powershell
 # 终端 1：启动 we-mp-rss
-cd E:\cctry\GoActivity\we-mp-rss
-D:\miniconda3\envs\we-mp-rss\python.exe main.py -job True -init True
+cd E:\Develop\GoActivity\we-mp-rss
+[Environment]::SetEnvironmentVariable("WE_RSS.AUTH", "True", "Process")
+.\.venv\Scripts\python.exe main.py -job True -init True
 
 # 终端 2：启动 GoActivity
-cd E:\cctry\GoActivity
-D:\miniconda3\envs\goactivity\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+cd E:\Develop\GoActivity
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 健康检查：

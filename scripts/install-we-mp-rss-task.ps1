@@ -6,8 +6,10 @@ $ErrorActionPreference = "Stop"
 # 配置
 $TASK_NAME = "we-mp-rss"
 $TASK_DESCRIPTION = "we-mp-rss 微信公众号订阅助手"
-$PYTHON_EXE = "D:\miniconda3\envs\we-mp-rss\python.exe"
-$WORKING_DIR = "E:\cctry\GoActivity\we-mp-rss"
+$WORKING_DIR = Join-Path (Split-Path $PSScriptRoot -Parent) "we-mp-rss"
+$PYTHON_EXE = $env:WEMP_RSS_PYTHON
+if (-not $PYTHON_EXE) { $PYTHON_EXE = Join-Path $WORKING_DIR ".venv\Scripts\python.exe" }
+if (-not (Test-Path -LiteralPath $PYTHON_EXE)) { $PYTHON_EXE = "D:\miniconda3\envs\we-mp-rss\python.exe" }
 $SCRIPT = "main.py -job True -init True"
 
 Write-Host "========================================" -ForegroundColor Cyan

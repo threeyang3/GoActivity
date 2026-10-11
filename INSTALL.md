@@ -1,5 +1,7 @@
 # GoActivity 安装指南
 
+完整双服务安装入口是 [从 GitHub 复现完整功能](docs/reproducibility.md) 和 `scripts/bootstrap-project.py`。下面的旧 `setup.bat` 流程只覆盖部分主服务安装，不会恢复采集端、Playwright、前端构建和外部授权。
+
 ## 快速安装（推荐）
 
 ### 一键安装

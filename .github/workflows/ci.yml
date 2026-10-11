@@ -8,10 +8,22 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         python-version: ["3.11"]
+        os: [ubuntu-latest, windows-latest]
+
+    env:
+      DATABASE_URL: sqlite:///storage/ci.db
+      STORAGE_DIR: storage
+      FEISHU_PROVIDER: mock
+      OCR_PROVIDER: mock
+      VISION_API_PROVIDER: mock
+      FEISHU_BOT_ENABLED: 'false'
+      FEISHU_REPORT_DAILY_ENABLED: 'false'
+      FEISHU_REPORT_WEEKLY_ENABLED: 'false'
+      WE_MP_RSS_BASE_URL: http://127.0.0.1:1
 
     steps:
       - uses: actions/checkout@v4
@@ -24,10 +36,37 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -c constraints-runtime.txt
 
       - name: Run tests
         run: python -m pytest -q --tb=short
 
       - name: Check imports
         run: python -c "from app.main import app; print('Import OK')"
+
+  collector:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Restore pinned collector source
+        run: |
+          git clone https://github.com/rachelos/we-mp-rss.git we-mp-rss
+          git -C we-mp-rss checkout "$(cat patches/collector-base.txt)"
+          python scripts/apply-collector-patch.py
+          python scripts/apply-collector-patch.py --check
+      - name: Install collector dependencies
+        run: pip install -r we-mp-rss/requirements.txt -c constraints-collector.txt
+      - name: Collector regression tests
+        working-directory: we-mp-rss
+        run: python -m unittest discover -s tests -p 'test_*.py'
+      - name: Build collector frontend
+        working-directory: we-mp-rss/web_ui
+        run: |
+          npm ci
+          npm run build

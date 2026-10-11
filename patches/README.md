@@ -22,8 +22,9 @@ git -C we-mp-rss switch -c codex/collector-runtime
 cd we-mp-rss/web_ui
 npm ci
 npm run build
+Copy-Item -Path dist/* -Destination ../static -Recurse -Force
 ```
 
 使用兼容 Vite 8 的 Node.js（本机已验证 Node.js 24）。新机器仍需自行填写配置和扫码登录；补丁不携带这些数据。以后升级上游时，在单独分支验证补丁和测试，出现冲突应先解决后再启动服务。
 
-本机已有全部改动，应用脚本会检查并提示已应用，不会重复修改。
+安装脚本 `scripts/bootstrap-project.py` 自动完成上述步骤，包括将构建结果部署到 `static/`。应用脚本会检查已应用状态，不会重复修改；已有其他本地定制时，需要先解决补丁冲突，脚本不会覆盖它们。

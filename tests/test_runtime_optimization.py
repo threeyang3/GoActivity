@@ -114,6 +114,7 @@ def test_bot_shutdown_includes_cli_descendants(monkeypatch):
     process.poll.return_value = None
     stop = Mock()
     monkeypatch.setattr("app.services.bot_consumer.sys.platform", "win32")
+    monkeypatch.setattr("app.services.bot_consumer.subprocess.CREATE_NO_WINDOW", 0, raising=False)
     monkeypatch.setattr("app.services.bot_consumer.subprocess.run", stop)
     BotEventConsumer._stop_process(process)
     assert stop.call_args.args[0] == ["taskkill", "/PID", "456", "/T", "/F"]

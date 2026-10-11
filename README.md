@@ -4,6 +4,8 @@
 
 ## 本地环境
 
+新机器完整安装请先看 [复现指南](docs/reproducibility.md)，运行 `py -3.11 scripts/bootstrap-project.py --go-python py --collector-python py`；它同时安装主服务和采集端。
+
 本机于 2026-10-11 恢复为两个独立项目虚拟环境：GoActivity 使用 Python 3.11，we-mp-rss 使用 Python 3.13。当前目录为 `E:\Develop\GoActivity`。桌面管理器会优先找到各服务的 `.venv`，也支持通过 `GOACTIVITY_PYTHON` / `WEMP_RSS_PYTHON` 指定解释器。
 
 ```powershell

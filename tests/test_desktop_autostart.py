@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from desktop import autostart
 
@@ -60,7 +61,7 @@ def test_build_autostart_command_uses_module_entrypoint(monkeypatch, tmp_path):
 
 def test_autostart_manager_can_enable_and_disable(monkeypatch):
     fake = FakeWinreg()
-    monkeypatch.setattr(autostart.os, "name", "nt")
+    monkeypatch.setattr(autostart, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(autostart, "winreg", fake)
     manager = autostart.AutostartManager(command='"C:\\GoActivity.exe"')
 
@@ -76,7 +77,7 @@ def test_autostart_manager_can_enable_and_disable(monkeypatch):
 
 def test_disabling_missing_autostart_entry_is_idempotent(monkeypatch):
     fake = FakeWinreg()
-    monkeypatch.setattr(autostart.os, "name", "nt")
+    monkeypatch.setattr(autostart, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(autostart, "winreg", fake)
 
     autostart.AutostartManager().set_enabled(False)

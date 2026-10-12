@@ -92,18 +92,15 @@ class BotEventConsumer:
     def _consume_loop(self) -> None:
         """消费循环：运行 lark-cli event consume，自动重启。"""
         while not self._stop_event.is_set():
-            if self._restart_count >= self._max_restarts:
-                logger.error("Bot consumer exceeded max restarts (%d), giving up", self._max_restarts)
-                break
-
             try:
                 self._run_consumer()
             except Exception as exc:
                 logger.error("Bot consumer crashed: %s", exc)
                 self._restart_count += 1
                 if not self._stop_event.is_set():
-                    logger.info("Restarting bot consumer (%d/%d)...", self._restart_count, self._max_restarts)
-                    self._stop_event.wait(5)  # 等待 5 秒后重启
+                    delay = min(300, 5 * 2 ** min(self._restart_count - 1, 6))
+                    logger.info("Retrying bot consumer in %d seconds", delay)
+                    self._stop_event.wait(delay)
 
     def _run_consumer(self) -> None:
         """运行 lark-cli event consume 子进程。"""

@@ -8,3 +8,5 @@ __pycache__/
 storage/
 we-mp-rss/
 node_modules/
+build/
+dist/

@@ -62,6 +62,9 @@ class AutomationGuardService:
                 logger.warning("Failed to load remote account health: %s", exc)
 
         account_names = sorted(set(local_by_name) | set(remote_by_name))
+        successful_accounts = {}
+        if include_remote and remote_by_name:
+            successful_accounts = self.collection_health()["state"].get("successful_accounts", {})
         now = utcnow()
         threshold = max(1, self.settings.account_stale_hours)
         result = []
@@ -82,9 +85,13 @@ class AutomationGuardService:
             elif age_hours is None:
                 health_status = "never_collected"
             elif age_hours >= threshold:
-                health_status = "quiet_source" if (
-                    publication_age_hours is not None and publication_age_hours >= threshold
-                ) else "stale_data"
+                # Old publications alone cannot prove the source is quiet;
+                # collection may have been broken throughout that interval.
+                health_status = "stale_data"
+                remote_id = str(remote_by_name.get(mp_name, {}).get("mp_id") or remote_by_name.get(mp_name, {}).get("id") or "")
+                successful_at = successful_accounts.get(remote_id, 0)
+                if publication_age_hours is not None and publication_age_hours >= threshold and datetime.now().timestamp() - successful_at < threshold * 3600:
+                    health_status = "quiet_source"
             else:
                 health_status = "fresh"
             status = "ok" if health_status in {"fresh", "quiet_source"} else "stale"
@@ -117,6 +124,7 @@ class AutomationGuardService:
         triggered = []
         failed = []
         skipped = []
+        skip_reasons = []
         for item in selected:
             mp_id = str(item.get("mp_id") or item.get("id") or "")
             if not mp_id:
@@ -133,6 +141,7 @@ class AutomationGuardService:
                 if isinstance(payload, dict) and payload.get("code", 0) != 0:
                     if payload.get("code") == 42901:
                         skipped.append(item.get("mp_name") or mp_id)
+                        skip_reasons.append(str(payload.get("message") or "采集冷却或去重限制"))
                         continue
                     raise ValueError(str(payload.get("message") or "采集请求未被接受"))
                 triggered.append(item.get("mp_name") or mp_id)
@@ -144,7 +153,31 @@ class AutomationGuardService:
             "triggered": triggered,
             "failed": failed,
             "skipped": skipped,
+            "skip_reasons": sorted(set(skip_reasons)),
+            "blocked": bool(selected) and not triggered and bool(skipped),
         }
+
+    def collection_health(self) -> dict[str, Any]:
+        from app.adapters.we_mp_rss import WeMpRssClient
+        try:
+            state = WeMpRssClient().collection_status()
+        except Exception:
+            state = {}
+        issues = []
+        if not state:
+            issues.append("无法确认采集运行状态")
+        else:
+            if state.get("authorized") is False:
+                issues.append("微信会话失效，需要重新扫码")
+            remaining = state.get("auth_remaining_seconds")
+            if isinstance(remaining, (int, float)) and 0 < remaining < 86400:
+                issues.append("微信会话将在 24 小时内到期，请检查自动续期")
+            if state.get("cooldown"):
+                issues.append("微信接口限频，正在按冷却时间等待")
+            last_success = state.get("last_success_at")
+            if not isinstance(last_success, (int, float)) or datetime.now().timestamp() - last_success > self.settings.account_stale_hours * 3600:
+                issues.append("近期没有已确认的微信采集成功记录")
+        return {"status": "degraded" if issues else "ok", "issues": issues, "state": state}
 
     def reconcile_feishu(self, repair_missing: bool = False) -> dict[str, Any]:
         remote = self._list_feishu_records()
@@ -300,7 +333,7 @@ class AutomationGuardService:
             Event.status == EventStatus.FAILED_SYNC,
             Event.feishu_retry_count >= self.settings.feishu_sync_retry_max,
         ).scalar() or 0
-        stale = [item for item in self.account_health() if item["status"] == "stale"]
+        stale = [item for item in self.account_health(include_remote=True) if item["status"] == "stale"]
         pending = self.db.query(func.count(Event.id)).filter(
             Event.status.in_([EventStatus.EXTRACTED, EventStatus.PENDING_AI]),
             Event.feishu_record_id == "",
@@ -336,6 +369,9 @@ class AutomationGuardService:
             issue_entries.append(("sync_error", f"本轮同步异常：{str(sync_result['run_error'])[:160]}"))
         if collection_result and collection_result.get("failed"):
             issue_entries.append(("priority_collection_failed", f"重点公众号采集触发失败：{len(collection_result['failed'])} 个"))
+        collection = self.collection_health()
+        if collection["issues"]:
+            issue_entries.append(("collection_health", "；".join(collection["issues"])))
         if reconcile:
             if reconcile.get("run_error"):
                 issue_entries.append(("reconcile_error", f"飞书对账异常：{str(reconcile['run_error'])[:160]}"))

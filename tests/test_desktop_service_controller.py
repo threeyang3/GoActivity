@@ -8,6 +8,7 @@ def test_auto_restart_reuses_existing_monitor_thread(monkeypatch):
     service = controller.goactivity
     calls = []
     monkeypatch.setattr("desktop.service_controller.time.sleep", lambda _: None)
+    monkeypatch.setattr(service._monitor_stop, "wait", lambda _: False)
 
     def start_goactivity(*, start_monitor=True):
         calls.append(start_monitor)

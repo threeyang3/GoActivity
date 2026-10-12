@@ -8,10 +8,11 @@ import psutil
 def snapshot():
     roots = []
     for process in psutil.process_iter(["pid", "name", "cmdline"]):
-        if "python" not in (process.info["name"] or "").lower():
+        name = (process.info["name"] or "").lower()
+        if "python" not in name and name != "goactivity.exe":
             continue
         args = process.info["cmdline"] or []
-        if "desktop.app" in args or any("run_module('desktop.app'" in arg for arg in args):
+        if name == "goactivity.exe" or "desktop.app" in args or any("run_module('desktop.app'" in arg for arg in args):
             roots.append(process)
     root_ids = {process.pid for process in roots}
     roots = [process for process in roots if process.ppid() not in root_ids]

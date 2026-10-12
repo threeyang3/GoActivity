@@ -10,7 +10,9 @@ import webbrowser
 from pathlib import Path
 
 # Set working directory
-os.chdir(Path(__file__).parent.parent)
+from desktop.paths import project_root
+
+os.chdir(project_root())
 
 from PySide6.QtCore import Qt, QTimer, Signal, QThread
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QPainter, QPixmap
@@ -102,7 +104,7 @@ class StatusWorker(QThread):
     def run(self):
         while self._running:
             # Check GoActivity
-            status = check_health(SERVICE_HOST, SERVICE_PORT, "/health")
+            status = check_health(SERVICE_HOST, SERVICE_PORT, "/health", timeout=12)
             self.status_updated.emit("goactivity", status)
             # Check WeRSS
             status = check_health(RSS_HOST, RSS_PORT, "/api/docs")
@@ -539,8 +541,26 @@ class GoActivityTray:
         # Auto-start services
         self._run_in_thread(self.controller.start_goactivity)
         self._run_in_thread(self.controller.start_werss)
+        self._run_in_thread(self._backup_loop)
 
         return self.app.exec()
+
+    def _backup_loop(self):
+        import subprocess
+        import time
+        from desktop.service_controller import find_goactivity_python, service_environment
+        while True:
+            try:
+                subprocess.run([find_goactivity_python(), "-m", "desktop.maintenance"],
+                               cwd=str(project_root()), env=service_environment(),
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                               timeout=260, check=True)
+            except Exception:
+                # Retry next cycle; do not destabilize service supervision.
+                time.sleep(300)
+                continue
+            time.sleep(6 * 3600)
 
 
 def main():
@@ -548,10 +568,11 @@ def main():
     # Single instance check
     lock = SingleInstance()
     if not lock.try_acquire():
-        QMessageBox.warning(None, "GoActivity", "GoActivity 管理器已在运行")
-        sys.exit(0)
+        return 0
 
     try:
+        from desktop.win_job import enable_process_tree_cleanup
+        enable_process_tree_cleanup()
         tray = GoActivityTray()
         exit_code = tray.run()
     finally:

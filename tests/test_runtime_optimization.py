@@ -120,7 +120,7 @@ def test_bot_shutdown_includes_cli_descendants(monkeypatch):
     assert stop.call_args.args[0] == ["taskkill", "/PID", "456", "/T", "/F"]
 
 
-def test_bot_repeated_immediate_exit_is_bounded(monkeypatch):
+def test_bot_repeated_immediate_exit_uses_capped_backoff(monkeypatch):
     consumer = BotEventConsumer()
     launches = []
     def fail():
@@ -128,6 +128,13 @@ def test_bot_repeated_immediate_exit_is_bounded(monkeypatch):
         from app.exceptions import ProviderError
         raise ProviderError("test")
     monkeypatch.setattr(consumer, "_run_consumer", fail)
-    monkeypatch.setattr(consumer._stop_event, "wait", lambda _: False)
+    delays = []
+    def wait(delay):
+        delays.append(delay)
+        if len(delays) == 8:
+            consumer._stop_event.set()
+        return False
+    monkeypatch.setattr(consumer._stop_event, "wait", wait)
     consumer._consume_loop()
-    assert len(launches) == consumer._max_restarts
+    assert len(launches) == 8
+    assert delays == [5, 10, 20, 40, 80, 160, 300, 300]

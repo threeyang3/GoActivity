@@ -19,9 +19,14 @@ def accounts_health(db: Session = Depends(get_db)) -> list[dict]:
 def automation_status(request: Request, db: Session = Depends(get_db)) -> dict:
     auto_sync = getattr(request.app.state, "auto_sync", None)
     scheduler = auto_sync.get_scheduler_status() if auto_sync else {"status": "unknown"}
+    from app.config import get_settings
+    from app.services.backup_status import backup_status
+    backup = backup_status(get_settings())
     return {
         "scheduler": scheduler,
         "maintenance": AutomationGuardService(db).maintenance_status(),
+        "collection": AutomationGuardService(db).collection_health(),
+        "backup": backup,
     }
 
 
@@ -47,7 +52,7 @@ def collect_priority(
     result = guard.trigger_priority_collection()
     guard.record_maintenance_result(
         "priority_collection",
-        "degraded" if result.get("failed") else "completed",
+        "degraded" if result.get("failed") or result.get("blocked") else "completed",
         result,
     )
     guard.send_alerts(collection_result=result)

@@ -1,5 +1,5 @@
 diff --git a/apis/auth.py b/apis/auth.py
-index 88140d5a1143caf6508162d51c915cdb6c8d5816..0dfc6a4c44df8e1edbf3510010213c518b1eb15a 100644
+index 88140d5a..0dfc6a4c 100644
 --- a/apis/auth.py
 +++ b/apis/auth.py
 @@ -31,7 +31,7 @@ from driver.wx import WX_API
@@ -19,7 +19,7 @@ index 88140d5a1143caf6508162d51c915cdb6c8d5816..0dfc6a4c44df8e1edbf3510010213c51
 \ No newline at end of file
 +        )
 diff --git a/apis/mps.py b/apis/mps.py
-index 2040f71a15fbd466ce3e84e54106d246e97523dc..b18ed4e9e4af8999fbf0a600340d12bff16a3058 100644
+index 2040f71a..b18ed4e9 100644
 --- a/apis/mps.py
 +++ b/apis/mps.py
 @@ -372,8 +372,20 @@ async def update_mps(
@@ -46,10 +46,10 @@ index 2040f71a15fbd466ce3e84e54106d246e97523dc..b18ed4e9e4af8999fbf0a600340d12bf
              "time_span":time_span,
              "list":result,
 diff --git a/apis/task_queue.py b/apis/task_queue.py
-index 42d1eb603b40667283282b063f7aea0736c6507a..38a9aa4c0574fca564e86d92455a4bfd073423ab 100644
+index 42d1eb60..6fa906eb 100644
 --- a/apis/task_queue.py
 +++ b/apis/task_queue.py
-@@ -11,6 +11,13 @@ import asyncio
+@@ -11,6 +11,22 @@ import asyncio
  
  router = APIRouter(prefix="/task-queue", tags=["任务队列"])
  
@@ -57,6 +57,15 @@ index 42d1eb603b40667283282b063f7aea0736c6507a..38a9aa4c0574fca564e86d92455a4bfd
 +async def collection_status(current_user: dict = Depends(get_current_user_or_ak)):
 +    from core.collection_guard import collection_guard
 +    result = collection_guard.status()
++    from driver.success import getStatus
++    from driver.token import get as token_value
++    import time
++    result["authorized"] = getStatus()
++    expiry = token_value("expiry.expiry_timestamp", 0)
++    try:
++        result["auth_remaining_seconds"] = max(0, int(float(expiry) - time.time()))
++    except (TypeError, ValueError):
++        result["auth_remaining_seconds"] = None
 +    result["queue_pending"] = TaskQueue.get_queue_info()["pending_tasks"]
 +    return success_response(data=result)
 +
@@ -64,7 +73,7 @@ index 42d1eb603b40667283282b063f7aea0736c6507a..38a9aa4c0574fca564e86d92455a4bfd
  async def get_queue_status(
      current_user: dict = Depends(get_current_user_or_ak)
 diff --git a/apis/tools.py b/apis/tools.py
-index cbaf39e33f3605146a0b9119e8c9ed3fea1c7aeb..d5aa226b4402f33029b027bf08fa8ca43b226b62 100644
+index cbaf39e3..d5aa226b 100644
 --- a/apis/tools.py
 +++ b/apis/tools.py
 @@ -16,10 +16,8 @@ import uuid
@@ -110,7 +119,7 @@ index cbaf39e33f3605146a0b9119e8c9ed3fea1c7aeb..d5aa226b4402f33029b027bf08fa8ca4
 \ No newline at end of file
 +        return error_response(500, f"图片处理失败: {str(e)}")
 diff --git a/core/auth.py b/core/auth.py
-index 2ede948f6ac1233f6c1ee59ee97d3ea2042a73e9..6a95cbb976421803e2cdb6958e51f3cda7926b8f 100644
+index 2ede948f..6a95cbb9 100644
 --- a/core/auth.py
 +++ b/core/auth.py
 @@ -677,8 +677,6 @@ def authenticate_cascade_node(api_key: str, secret_key: str) -> Optional[dict]:
@@ -124,10 +133,10 @@ index 2ede948f6ac1233f6c1ee59ee97d3ea2042a73e9..6a95cbb976421803e2cdb6958e51f3cd
              CascadeNode.api_key == api_key,
 diff --git a/core/collection_guard.py b/core/collection_guard.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2a1fa132ab5b91f272de19b64fa99f1195ebe93b
+index 00000000..d58ff432
 --- /dev/null
 +++ b/core/collection_guard.py
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,116 @@
 +"""Shared deduplication and persistent WeChat rate-limit cooldown."""
 +import json
 +import os
@@ -209,9 +218,12 @@ index 0000000000000000000000000000000000000000..2a1fa132ab5b91f272de19b64fa99f11
 +            self.state.update(strikes=strikes, cooldown_until=self.clock() + 1800 * 2 ** (strikes - 1))
 +            self._save()
 +
-+    def success(self):
++    def success(self, mp_id=""):
 +        with self.lock:
 +            self.state["strikes"] = 0
++            self.state["last_success_at"] = self.clock()
++            if mp_id:
++                self.state.setdefault("successful_accounts", {})[mp_id] = self.clock()
 +            self._save()
 +
 +    def status(self):
@@ -219,6 +231,8 @@ index 0000000000000000000000000000000000000000..2a1fa132ab5b91f272de19b64fa99f11
 +            remaining = max(0, int(self.state.get("cooldown_until", 0) - self.clock()))
 +            return {"cooldown": remaining > 0, "remaining_seconds": remaining,
 +                    "retry_at": self.state.get("cooldown_until", 0),
++                    "last_success_at": self.state.get("last_success_at"),
++                    "successful_accounts": dict(self.state.get("successful_accounts", {})),
 +                    "pending_count": len(self.pending), "active_count": len(self.active)}
 +
 +
@@ -240,7 +254,7 @@ index 0000000000000000000000000000000000000000..2a1fa132ab5b91f272de19b64fa99f11
 +            collection_guard.finish(key)
 +    return wrapped
 diff --git a/core/db.py b/core/db.py
-index f60689bb19f984d54e74d86737ee2feede06ee06..3354ec59cd6b4d8234d464d178f8f5aec4819b8e 100644
+index f60689bb..3354ec59 100644
 --- a/core/db.py
 +++ b/core/db.py
 @@ -60,9 +60,8 @@ class Db:
@@ -256,7 +270,7 @@ index f60689bb19f984d54e74d86737ee2feede06ee06..3354ec59cd6b4d8234d464d178f8f5ae
              # 为 SQLite 设置 text_factory 处理无效 UTF-8 字符
              if con_str.startswith('sqlite:///'):
 diff --git a/core/wx/model/web.py b/core/wx/model/web.py
-index b2b6b9801e563c7a6fe88473cb8c00c179982710..4db159e32d2ad6850021ddbede241147bf34f8f8 100644
+index b2b6b980..b177986d 100644
 --- a/core/wx/model/web.py
 +++ b/core/wx/model/web.py
 @@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
@@ -288,7 +302,7 @@ index b2b6b9801e563c7a6fe88473cb8c00c179982710..4db159e32d2ad6850021ddbede241147
                      super().Error("错误原因:{}:代码:{}".format(msg['base_resp']['err_msg'],msg['base_resp']['ret']),code=msg['base_resp']['err_msg'])
                      break    
                  # 如果返回的内容中为空则结束
-+                collection_guard.success()
++                collection_guard.success(Mps_id or faker_id)
                  if 'publish_page' not in msg:
                      super().Error("all ariticle parsed")
                      break
@@ -300,10 +314,10 @@ index b2b6b9801e563c7a6fe88473cb8c00c179982710..4db159e32d2ad6850021ddbede241147
 \ No newline at end of file
 +            logger.error(f"设置feed状态失败: {e}")
 diff --git a/driver/auth.py b/driver/auth.py
-index 58a340f7d0c1b4b6a6b94bf7d8957b8428f26841..7ea955f4388c41d4978904bb16b5ef9aa0a66ae0 100644
+index 58a340f7..609042fa 100644
 --- a/driver/auth.py
 +++ b/driver/auth.py
-@@ -1,36 +1,210 @@
+@@ -1,36 +1,216 @@
  import threading
  import asyncio
 -from core.print import print_warning
@@ -319,6 +333,7 @@ index 58a340f7d0c1b4b6a6b94bf7d8957b8428f26841..7ea955f4388c41d4978904bb16b5ef9a
 +# 连续续期失败计数器，达到阈值后通知用户重新扫码
 +_consecutive_failures = 0
 +_MAX_FAILURES_BEFORE_NOTIFY = 3
++_renewal_lock = threading.Lock()
 +
 +
 +async def renew_auth() -> bool:
@@ -451,18 +466,24 @@ index 58a340f7d0c1b4b6a6b94bf7d8957b8428f26841..7ea955f4388c41d4978904bb16b5ef9a
 +    连续失败 N 次后发送通知提醒用户重新扫码
 +    """
 +    global _consecutive_failures
++    if not _renewal_lock.acquire(blocking=False):
++        return
++    outcome = {"ok": False}
 +
 +    def run_renew():
          loop = asyncio.new_event_loop()
          asyncio.set_event_loop(loop)
          try:
 -            loop.run_until_complete(wx.switch_account())
-+            return loop.run_until_complete(renew_auth())
++            outcome["ok"] = loop.run_until_complete(asyncio.wait_for(renew_auth(), timeout=90))
++        except Exception:
++            outcome["ok"] = False
          finally:
              loop.close()
++            _renewal_lock.release()
  
 -    thread = threading.Thread(target=run_auth)
-+    thread = threading.Thread(target=run_renew)
++    thread = threading.Thread(target=run_renew, daemon=True)
      thread.start()
 -    thread.join()  # 可选：等待完成
 -def start_auth_service():    
@@ -478,9 +499,8 @@ index 58a340f7d0c1b4b6a6b94bf7d8957b8428f26841..7ea955f4388c41d4978904bb16b5ef9a
 +        print_warning("[续期] 续期超时，将在下次重试")
 +        _consecutive_failures += 1
 +    else:
-+        # 通过检查登录状态判断是否成功
-+        from driver.success import getStatus
-+        if getStatus():
++        # A still-valid old session does not prove this renewal succeeded.
++        if outcome["ok"]:
 +            _consecutive_failures = 0
 +        else:
 +            _consecutive_failures += 1
@@ -534,9 +554,8 @@ index 58a340f7d0c1b4b6a6b94bf7d8957b8428f26841..7ea955f4388c41d4978904bb16b5ef9a
 +        print_success("[续期] 定时任务已启动，每 6 小时自动续期 Cookie")
 +    else:
 +        print_info("[续期] 未启用自动续期（设置 WE_RSS.AUTH=True 以启用）")
-\ No newline at end of file
 diff --git a/driver/playwright_driver.py b/driver/playwright_driver.py
-index 680f45fa0402e726aa84d2d62d3930f5ca8d55e2..f0a17defa1fb78cfd4cb37323cde9291aea76971 100644
+index 680f45fa..f0a17def 100644
 --- a/driver/playwright_driver.py
 +++ b/driver/playwright_driver.py
 @@ -50,11 +50,12 @@ class PlaywrightController:
@@ -675,7 +694,7 @@ index 680f45fa0402e726aa84d2d62d3930f5ca8d55e2..f0a17defa1fb78cfd4cb37323cde9291
              self.metrics.browser_startup_time = time.time() - start_time
 diff --git a/driver/qrcode.py b/driver/qrcode.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..20680b8b9ffcc114f089f3ba0d8e5e5c984ab266
+index 00000000..20680b8b
 --- /dev/null
 +++ b/driver/qrcode.py
 @@ -0,0 +1,8 @@
@@ -688,7 +707,7 @@ index 0000000000000000000000000000000000000000..20680b8b9ffcc114f089f3ba0d8e5e5c
 +        if min(image.size) < 80 or ImageStat.Stat(image.convert("L")).stddev[0] < 15:
 +            raise ValueError("二维码图片为空白或尺寸异常，请重新获取")
 diff --git a/driver/success.py b/driver/success.py
-index d5b47d796738915bc3b2861fb1dde820c14e65a9..dd76f2ae59b762e7a0cf2e2e3d05b96b710c6c3e 100644
+index d5b47d79..cc0a809a 100644
 --- a/driver/success.py
 +++ b/driver/success.py
 @@ -32,7 +32,11 @@ def setStatus(status:bool):
@@ -704,7 +723,7 @@ index d5b47d796738915bc3b2861fb1dde820c14e65a9..dd76f2ae59b762e7a0cf2e2e3d05b96b
      global WX_LOGIN_ED
      import time
  
-@@ -43,31 +47,36 @@ def getStatus():
+@@ -43,37 +47,54 @@ def getStatus():
              if val is not None and val == "1":
                  # 检查token是否过期
                  token_data = getLoginInfo()
@@ -755,7 +774,43 @@ index d5b47d796738915bc3b2861fb1dde820c14e65a9..dd76f2ae59b762e7a0cf2e2e3d05b96b
          except Exception as e:
              print_warning(f"检查登录状态失败: {e}")
              pass
-@@ -125,17 +134,17 @@ def CanGetToken():
+     # 回退到全局变量
+     with login_lock:
+-        return WX_LOGIN_ED
++        logged_in = WX_LOGIN_ED
++    if not logged_in:
++        return False
++    # The local fallback must enforce the same dynamic expiry as Redis.
++    data = getLoginInfo() or {}
++    expiry = (data.get("expiry") or {}).get("expiry_timestamp", 0)
++    try:
++        valid = bool(data.get("token")) and float(expiry) > time.time()
++    except (TypeError, ValueError):
++        valid = False
++    if not valid:
++        setStatus(False)
++    return valid
+ def getLoginInfo():
+     from driver.token import _get_token_data
+     return _get_token_data()
+@@ -84,7 +105,6 @@ def Success_Msg(data:dict,ext_data:dict={}):
+     text="# 授权成功\n"
+     text+=f"- 服务名：{cfg.get('server.name','')}\n"
+     text+=f"- 名称：{ext_data['wx_app_name']}\n"
+-    text+=f"- Token: {data['token']}\n"
+     text+=f"- 有效时间: {data['expiry']['expiry_time']}\n"
+     
+     sys_notice(text, str(cfg.get("server.code_title","WeRss授权完成")))
+@@ -95,7 +115,7 @@ def Success(data:dict,ext_data:dict={}):
+                 print_success(f"名称：{ext_data['wx_app_name']}")
+             if data['expiry'] !=None:
+                 Success_Msg(data,ext_data)
+-                print_success(f"有效时间: {data['expiry']['expiry_time']} (剩余秒数: {data['expiry']['remaining_seconds']}) Token: {data['token']}")
++                print_success(f"有效时间: {data['expiry']['expiry_time']} (剩余秒数: {data['expiry']['remaining_seconds']})")
+                 set_token(data,ext_data)
+                 setStatus(True)
+             else:
+@@ -125,17 +145,17 @@ def CanGetToken():
      # 检查过期信息
      expiry = token_data.get('expiry')
      if expiry:
@@ -782,7 +837,7 @@ index d5b47d796738915bc3b2861fb1dde820c14e65a9..dd76f2ae59b762e7a0cf2e2e3d05b96b
                  setStatus(False)
                  return False
 diff --git a/driver/token.py b/driver/token.py
-index c423d2feaa140ddb137b99725b872d0f11663eec..5fd74e188fd5d9e710143773ce9a29a685bee3d6 100644
+index c423d2fe..5fd74e18 100644
 --- a/driver/token.py
 +++ b/driver/token.py
 @@ -44,7 +44,7 @@ def set_token(data:any,ext_data:any=None):
@@ -832,7 +887,7 @@ index c423d2feaa140ddb137b99725b872d0f11663eec..5fd74e188fd5d9e710143773ce9a29a6
 \ No newline at end of file
 +    return wx_cfg.get("token_data", None)
 diff --git a/driver/wx.py b/driver/wx.py
-index 37f5e636a410eba4c71d2f2f3324eaedda79c275..3f5447d51849e3564aee993e87cef67edc914c9b 100644
+index 37f5e636..3f5447d5 100644
 --- a/driver/wx.py
 +++ b/driver/wx.py
 @@ -6,7 +6,6 @@ from sqlalchemy import False_
@@ -1139,7 +1194,7 @@ index 37f5e636a410eba4c71d2f2f3324eaedda79c275..3f5447d51849e3564aee993e87cef67e
 \ No newline at end of file
 +    WX_API.GetCode(CallBack,NeedExit=NeedExit)
 diff --git a/driver/wx_api.py b/driver/wx_api.py
-index e90727d157d0be633b225a986a032f4fd0c809ff..c31af87f689ee0a243acf0a5d3fb5c83f597e299 100644
+index e90727d1..c31af87f 100644
 --- a/driver/wx_api.py
 +++ b/driver/wx_api.py
 @@ -15,7 +15,6 @@ from attr import s
@@ -1195,7 +1250,7 @@ index e90727d157d0be633b225a986a032f4fd0c809ff..c31af87f689ee0a243acf0a5d3fb5c83
 \ No newline at end of file
 +        logout()
 diff --git a/driver/wxarticle.py b/driver/wxarticle.py
-index 09caf2aed76e5c4af6a597110e329858a4895e95..0bdcc979ce43100817daff305fe6e8bd90d1bd4d 100644
+index 09caf2ae..0bdcc979 100644
 --- a/driver/wxarticle.py
 +++ b/driver/wxarticle.py
 @@ -77,8 +77,9 @@ class WXArticleFetcher:
@@ -1210,7 +1265,7 @@ index 09caf2aed76e5c4af6a597110e329858a4895e95..0bdcc979ce43100817daff305fe6e8bd
                  mobile_mode=True
              ) as controller:
 diff --git a/jobs/mps.py b/jobs/mps.py
-index 1653fba22a834795035c49a4b802410675c62ada..1f49ac4f0356840d2227d6d71cb7dbb8d7a98e1c 100644
+index 1653fba2..1f49ac4f 100644
 --- a/jobs/mps.py
 +++ b/jobs/mps.py
 @@ -20,7 +20,7 @@ def fetch_all_article():
@@ -1387,7 +1442,7 @@ index 1653fba22a834795035c49a4b802410675c62ada..1f49ac4f0356840d2227d6d71cb7dbb8
 \ No newline at end of file
 +    pass
 diff --git a/main.py b/main.py
-index bd151d82b22422be3f1fc66637527022eb718fab..9f55de33b1720071b086959668d1f1cc1bf87ac4 100644
+index bd151d82..9f55de33 100644
 --- a/main.py
 +++ b/main.py
 @@ -1,6 +1,19 @@
@@ -1444,10 +1499,10 @@ index bd151d82b22422be3f1fc66637527022eb718fab..9f55de33b1720071b086959668d1f1cc
          uvicorn.run("web:app", host="0.0.0.0", port=int(cfg.get("port",8001)),
 diff --git a/tests/test_collection_guard.py b/tests/test_collection_guard.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..689dd95d65edbc7d527d9323cc0b006820e1d918
+index 00000000..8aab8703
 --- /dev/null
 +++ b/tests/test_collection_guard.py
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,62 @@
 +import tempfile
 +import unittest
 +from pathlib import Path
@@ -1495,6 +1550,12 @@ index 0000000000000000000000000000000000000000..689dd95d65edbc7d527d9323cc0b0068
 +                Collector().collect(Mps_id="a")
 +        self.assertEqual(self.guard.status()["active_count"], 0)
 +
++    def test_success_timestamp_survives_restart(self):
++        self.guard.success("account-a")
++        loaded = CollectionGuard(self.path, clock=lambda: self.now + 60)
++        self.assertEqual(loaded.status()["last_success_at"], self.now)
++        self.assertEqual(loaded.status()["successful_accounts"], {"account-a": self.now})
++
 +    def test_failed_persistence_does_not_leave_active_account(self):
 +        with patch.object(self.guard, "_save", side_effect=OSError("test")):
 +            with self.assertRaises(OSError):
@@ -1506,7 +1567,7 @@ index 0000000000000000000000000000000000000000..689dd95d65edbc7d527d9323cc0b0068
 +    unittest.main()
 diff --git a/tests/test_qrcode_image.py b/tests/test_qrcode_image.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..76d962fc7fae1ff09fc905b3b91e005d074850a2
+index 00000000..76d962fc
 --- /dev/null
 +++ b/tests/test_qrcode_image.py
 @@ -0,0 +1,36 @@
@@ -1547,7 +1608,7 @@ index 0000000000000000000000000000000000000000..76d962fc7fae1ff09fc905b3b91e005d
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/web_ui/package-lock.json b/web_ui/package-lock.json
-index 9d9836b5bdf24dfad4da95265413974d4eae6bb5..7b4960e916ff5e04a48227f574a5ecaf7828f437 100644
+index 9d9836b5..7b4960e9 100644
 --- a/web_ui/package-lock.json
 +++ b/web_ui/package-lock.json
 @@ -19,7 +19,7 @@
@@ -2844,7 +2905,7 @@ index 9d9836b5bdf24dfad4da95265413974d4eae6bb5..7b4960e916ff5e04a48227f574a5ecaf
        "peerDependencies": {
          "typescript": "*"
 diff --git a/web_ui/package.json b/web_ui/package.json
-index 3fef9a22f2522b611e22dfab5e11fa61bb00cbd2..3f5b5b82f95fa06c9637fd362f78ab7246f65e22 100644
+index 3fef9a22..3f5b5b82 100644
 --- a/web_ui/package.json
 +++ b/web_ui/package.json
 @@ -2,6 +2,9 @@
@@ -2867,7 +2928,7 @@ index 3fef9a22f2522b611e22dfab5e11fa61bb00cbd2..3f5b5b82f95fa06c9637fd362f78ab72
      "typescript": "^4.5.0",
      "vite": "^8.0.8",
 diff --git a/web_ui/src/api/auth.ts b/web_ui/src/api/auth.ts
-index 2e13705567aff23b4db31832f522a241d5de455e..6774887c1985a7cd2657a77ebb8d32ad5a325fda 100644
+index 2e137055..6774887c 100644
 --- a/web_ui/src/api/auth.ts
 +++ b/web_ui/src/api/auth.ts
 @@ -1,5 +1,4 @@
@@ -2952,7 +3013,7 @@ index 2e13705567aff23b4db31832f522a241d5de455e..6774887c1985a7cd2657a77ebb8d32ad
 \ No newline at end of file
 +}
 diff --git a/web_ui/src/components/WechatAuthQrcode.vue b/web_ui/src/components/WechatAuthQrcode.vue
-index b5d695d1f47863ed61127b82379ca827109017db..9341615ebb0b18f8f1d81b101ebac5c8fed72049 100644
+index b5d695d1..9341615e 100644
 --- a/web_ui/src/components/WechatAuthQrcode.vue
 +++ b/web_ui/src/components/WechatAuthQrcode.vue
 @@ -32,9 +32,8 @@
@@ -3038,7 +3099,7 @@ index b5d695d1f47863ed61127b82379ca827109017db..9341615ebb0b18f8f1d81b101ebac5c8
 \ No newline at end of file
 +</style>
 diff --git a/web_ui/src/main.ts b/web_ui/src/main.ts
-index d81c74f68927d4b1624af8e3a61c7eafa6f053a5..27702f7d36a37d7d31762144ae7646f05786ce75 100644
+index d81c74f6..27702f7d 100644
 --- a/web_ui/src/main.ts
 +++ b/web_ui/src/main.ts
 @@ -5,7 +5,6 @@ import router from './router'
@@ -3057,7 +3118,7 @@ index d81c74f68927d4b1624af8e3a61c7eafa6f053a5..27702f7d36a37d7d31762144ae7646f0
 \ No newline at end of file
 +app.mount('#app')
 diff --git a/web_ui/yarn.lock b/web_ui/yarn.lock
-index acad5c1221993f6cef5568905dee2dcd02d11bd2..65dc3b3989a31aa5368359e394a8370d17d6e0b8 100644
+index acad5c12..65dc3b39 100644
 --- a/web_ui/yarn.lock
 +++ b/web_ui/yarn.lock
 @@ -44,99 +44,99 @@
@@ -4154,3 +4215,72 @@ index acad5c1221993f6cef5568905dee2dcd02d11bd2..65dc3b3989a31aa5368359e394a8370d
    integrity sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ==
  
  warning@^4.0.0:
+diff --git a/tests/test_auth_renewal.py b/tests/test_auth_renewal.py
+new file mode 100644
+index 00000000..31a29e18
+--- /dev/null
++++ b/tests/test_auth_renewal.py
+@@ -0,0 +1,63 @@
++"""Renewal tests use fake integrations and never touch local credentials."""
++import asyncio
++import importlib.util
++import sys
++import threading
++import types
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++
++
++class RenewalTests(unittest.TestCase):
++    def load_module(self):
++        stubs = {
++            "core.print": types.SimpleNamespace(**{name: lambda *_: None for name in ["print_warning", "print_info", "print_success", "print_error"]}),
++            "driver.base": types.SimpleNamespace(WX_InterFace=object),
++            "core.task": types.SimpleNamespace(TaskScheduler=object),
++            "driver.success": types.SimpleNamespace(Success=lambda *_: None, getStatus=lambda: True),
++        }
++        spec = importlib.util.spec_from_file_location("renewal_under_test", Path(__file__).resolve().parents[1] / "driver/auth.py")
++        module = importlib.util.module_from_spec(spec)
++        with patch.dict(sys.modules, stubs):
++            spec.loader.exec_module(module)
++        return module
++
++    def test_failed_renewal_not_hidden_by_still_valid_old_session(self):
++        module = self.load_module()
++        async def failed():
++            return False
++        module.renew_auth = failed
++        module._send_renewal_failure_notice = lambda: None
++        module.auth()
++        self.assertEqual(module._consecutive_failures, 1)
++        self.assertFalse(module._renewal_lock.locked())
++
++    def test_concurrent_renewal_is_skipped(self):
++        module = self.load_module()
++        module._renewal_lock.acquire()
++        module.auth()
++        self.assertEqual(module._consecutive_failures, 0)
++        module._renewal_lock.release()
++
++    def test_local_session_enforces_dynamic_expiry(self):
++        import time
++        stubs = {
++            "driver.token": types.SimpleNamespace(set_token=lambda *_: None),
++            "core.print": types.SimpleNamespace(print_warning=lambda *_: None, print_success=lambda *_: None),
++            "core.redis_client": types.SimpleNamespace(redis_client=types.SimpleNamespace(is_connected=False)),
++        }
++        spec = importlib.util.spec_from_file_location("driver.session_under_test", Path(__file__).resolve().parents[1] / "driver/success.py")
++        module = importlib.util.module_from_spec(spec)
++        with patch.dict(sys.modules, stubs):
++            spec.loader.exec_module(module)
++            module.setStatus(True)
++            module.getLoginInfo = lambda: {"token": "test-token", "expiry": {"expiry_timestamp": time.time() - 1, "remaining_seconds": 999999}}
++            self.assertFalse(module.getStatus())
++            module.setStatus(True)
++            module.getLoginInfo = lambda: {"token": "test-token", "expiry": {"expiry_timestamp": time.time() + 100}}
++            self.assertTrue(module.getStatus())
++
++
++if __name__ == "__main__":
++    unittest.main()

@@ -2,9 +2,21 @@ from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
 
 
 class Settings(BaseSettings):
+    @field_validator("we_mp_rss_base_url")
+    @classmethod
+    def local_collector_ipv4(cls, value: str) -> str:
+        # Windows may wait on an unused IPv6 loopback address before trying
+        # IPv4. The locally managed collector explicitly binds IPv4.
+        from urllib.parse import urlsplit, urlunsplit
+        parsed = urlsplit(value)
+        if parsed.netloc == "localhost" or parsed.netloc.startswith("localhost:"):
+            parsed = parsed._replace(netloc=parsed.netloc.replace("localhost", "127.0.0.1", 1))
+        return urlunsplit(parsed)
+
     app_name: str = "GoActivity"
     app_host: str = "127.0.0.1"
     app_port: int = 8000

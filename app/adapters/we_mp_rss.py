@@ -130,7 +130,10 @@ class WeMpRssClient:
             )
             response.raise_for_status()
             payload = response.json()
-            return payload.get("data", {}) if payload.get("code") == 0 else {}
+            if not isinstance(payload, dict) or payload.get("code") != 0:
+                return {}
+            state = payload.get("data", {})
+            return state if isinstance(state, dict) else {}
         except (requests.RequestException, ValueError):
             return {}
 

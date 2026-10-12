@@ -15,6 +15,14 @@ except ImportError:  # pragma: no cover - the desktop application is Windows-onl
 
 AUTOSTART_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_REG_NAME = "GoActivity"
+RECOVERY_TASK_NAME = "GoActivity Desktop Recovery"
+
+
+def recovery_task_command() -> str:
+    return subprocess.list2cmdline([
+        "powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+        f"Start-ScheduledTask -TaskName '{RECOVERY_TASK_NAME}'",
+    ])
 
 
 def build_autostart_command() -> str:
@@ -79,3 +87,22 @@ class AutostartManager:
                     winreg.DeleteValue(key, AUTOSTART_REG_NAME)
                 except FileNotFoundError:
                     pass
+
+        if getattr(sys, "frozen", False):
+            from desktop.paths import project_root
+            script = project_root() / "scripts/install-desktop-task.ps1"
+            try:
+                subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                     "-File", str(script), "-Mode", "Enable" if enabled else "Disable",
+                     "-Executable", str(Path(sys.executable).resolve())],
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=True,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise OSError("桌面故障恢复任务配置失败，请检查 Windows 任务计划程序权限。") from exc
+            if enabled:
+                # Both login entry points must start the same task, otherwise a
+                # registry-launched instance could escape task supervision.
+                with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                    winreg.SetValueEx(key, AUTOSTART_REG_NAME, 0, winreg.REG_SZ, recovery_task_command())

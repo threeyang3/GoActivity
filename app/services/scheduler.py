@@ -21,7 +21,7 @@ class ReportScheduler:
     """日报/周报定时任务调度器。"""
 
     def __init__(self) -> None:
-        self.scheduler = BackgroundScheduler()
+        self.scheduler = BackgroundScheduler(job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 3600})
         self.settings = get_settings()
 
     def start(self) -> None:

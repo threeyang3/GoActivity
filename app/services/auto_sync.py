@@ -36,7 +36,7 @@ class AutoSyncService:
 
     def __init__(self) -> None:
         self.settings = get_settings()
-        self.scheduler = BackgroundScheduler()
+        self.scheduler = BackgroundScheduler(job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 3600})
         self._execution_lock = threading.Lock()
         self._status_lock = threading.Lock()
         self._sync_status = {
@@ -568,7 +568,7 @@ class AutoSyncService:
                 guard = AutomationGuardService(db)
                 guard.record_maintenance_result(
                     "priority_collection",
-                    "degraded" if result.get("failed") else "completed",
+                    "degraded" if result.get("failed") or result.get("blocked") else "completed",
                     result,
                 )
                 guard.send_alerts(collection_result=result)
@@ -584,8 +584,8 @@ class AutoSyncService:
                         misfire_grace_time=300,
                     )
                 self._finish_run(
-                    "degraded" if result.get("failed") else "done",
-                    "重点公众号采集完成（存在失败）" if result.get("failed") else "重点公众号采集完成",
+                    "degraded" if result.get("failed") or result.get("blocked") else "done",
+                    "重点公众号采集受阻，等待恢复" if result.get("blocked") else ("重点公众号采集完成（存在失败）" if result.get("failed") else "重点公众号采集完成"),
                     result,
                 )
         except Exception as exc:

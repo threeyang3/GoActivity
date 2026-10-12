@@ -23,6 +23,8 @@ cd E:\Develop\GoActivity
 
 后台资源优化、实测内存与采集限频退避机制见 [运行优化记录](docs/runtime-optimization.md)。
 
+故障恢复、数据库快照和仍需人工处理的边界见 [无人值守运行说明](docs/unattended-operation.md)。
+
 采集端定制源码通过 [版本化补丁](patches/README.md) 随本仓库保存；新机器安装时先应用补丁，再构建采集端前端。
 
 ## 自动检测推文链路

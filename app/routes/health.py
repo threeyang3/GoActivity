@@ -25,6 +25,14 @@ router = APIRouter(tags=["health"])
 logger = logging.getLogger(__name__)
 
 
+@router.get("/health/live")
+def liveness(request: Request) -> dict:
+    database = _check_database()
+    execution = _check_sync_execution(getattr(request.app.state, "auto_sync", None), get_settings())
+    return {"status": "error" if database["status"] == "error" or execution["status"] == "error" else "ok",
+            "checks": {"database": database, "sync_execution": execution}}
+
+
 def _check_database() -> dict[str, Any]:
     """检查数据库连接。"""
     db = SessionLocal()
@@ -44,7 +52,10 @@ def _check_we_mp_rss(settings) -> dict[str, Any]:
         resp = http_requests.get(f"{settings.we_mp_rss_base_url}/api/docs", timeout=3)
         elapsed_ms = int((time.time() - start) * 1000)
         if resp.status_code == 200:
-            return {"status": "ok", "latency_ms": elapsed_ms}
+            from app.services.automation_guard import AutomationGuardService
+            with SessionLocal() as db:
+                collection = AutomationGuardService(db).collection_health()
+            return {"status": collection["status"], "latency_ms": elapsed_ms, "collection": collection}
         return {"status": "error", "code": resp.status_code}
     except Exception as exc:
         return {"status": "unreachable", "detail": str(exc)[:100]}
@@ -138,6 +149,24 @@ def _check_storage(settings) -> dict[str, Any]:
     return {"status": "missing", "path": str(storage)}
 
 
+def _check_sync_execution(auto_sync, settings) -> dict:
+    from datetime import datetime, timezone
+    if auto_sync is None:
+        return {"status": "disabled"}
+    state = auto_sync.get_sync_status()
+    if not state.get("running"):
+        return {"status": "ok"}
+    try:
+        started = datetime.fromisoformat(state["started_at"])
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        minutes = (datetime.now(timezone.utc) - started).total_seconds() / 60
+    except (KeyError, TypeError, ValueError):
+        return {"status": "degraded", "detail": "运行中的任务缺少有效开始时间"}
+    limit = max(30, settings.auto_sync_stale_minutes)
+    return {"status": "error" if minutes > limit else "ok", "running_minutes": round(minutes, 1), "limit_minutes": limit}
+
+
 def _check_scheduler(obj: Any, name: str) -> dict[str, Any]:
     if obj is None:
         return {"status": "unknown", "detail": f"{name} 未初始化"}
@@ -183,7 +212,7 @@ def health(request: Request) -> dict[str, Any]:
 
     # 集成检查：we-mp-rss
     checks["we_mp_rss"] = _check_we_mp_rss(settings)
-    if checks["we_mp_rss"]["status"] == "error":
+    if checks["we_mp_rss"]["status"] in {"error", "degraded"}:
         has_degraded = True
     elif checks["we_mp_rss"]["status"] == "unreachable":
         has_degraded = True
@@ -218,6 +247,13 @@ def health(request: Request) -> dict[str, Any]:
         has_degraded = True
 
     checks["auto_sync_scheduler"] = _check_scheduler(getattr(request.app.state, "auto_sync", None), "auto_sync")
+    checks["sync_execution"] = _check_sync_execution(getattr(request.app.state, "auto_sync", None), settings)
+    if checks["sync_execution"]["status"] == "error":
+        has_error = True
+    from app.services.backup_status import backup_status
+    checks["backup"] = backup_status(settings)
+    if checks["backup"]["status"] != "completed":
+        has_degraded = True
     if checks["auto_sync_scheduler"]["status"] in {"error", "degraded"}:
         has_degraded = True
 

@@ -37,6 +37,8 @@ The local Python environments and services were restored on 2026-10-11. Historic
 
 Local verification (2026-10-11): both services respond over HTTP, 9 subscriptions are readable, Chromium launches headlessly, and RapidOCR performs real inference. All 229 GoActivity tests pass with isolated storage/mock providers; 7 collector tests pass. Feishu CLI user and bot identities verify successfully, and the target table is readable (136 records, 93 with attachments). WeChat authorization was renewed and expires on 2026-10-15 16:49:29, but collection currently encounters upstream `200013` rate limiting. The collector now persists 30/60/120-minute cooldowns; do not bypass these or repeatedly trigger collection. Desktop services launch directly with bounded numerical thread defaults; OCR and export dependencies load on demand. See [docs/environment-recovery.md](docs/environment-recovery.md) and [docs/runtime-optimization.md](docs/runtime-optimization.md).
 
+Reliability verification (2026-10-12): 245 GoActivity tests and 11 collector tests pass in isolation. The packaged desktop now runs under a lightweight task-launched supervisor; real service and desktop crash tests recovered successfully, with old child processes cleaned up. Two online SQLite snapshots pass integrity checks; snapshots run every 6 hours with 28-file retention per database. Liveness is separate from collection health. WeChat remains authorized but rate limited, so the full pipeline reports degraded rather than falsely claiming fresh collection. See [docs/unattended-operation.md](docs/unattended-operation.md).
+
 Historical verification (2026-07-15):
 
 - all local `Event` rows are synced to Feishu
@@ -88,7 +90,7 @@ Historical verification (2026-07-15):
 - `scripts/`
   Management scripts for we-mp-rss (start/stop/status/install-task) and GoActivity setup.
 - `tests/`
-  Pytest suite (229 tests verified on 2026-10-11). Use an isolated DATABASE_URL and STORAGE_DIR for tests. `conftest.py` uses set-difference cleanup: records existing IDs before each test, deletes only new ones after.
+  Pytest suite (245 tests verified on 2026-10-12). Use an isolated DATABASE_URL and STORAGE_DIR for tests. `conftest.py` uses set-difference cleanup: records existing IDs before each test, deletes only new ones after.
 - `.github/workflows/ci.yml`
   CI pipeline: pytest on push/PR to main.
 - `we-mp-rss/`
@@ -340,7 +342,7 @@ The following notes describe the historical working setup. On this restored mach
 - 13 Feishu main views are created and verified in the live Base; calendar timebar and gallery cover settings are maintained together with visible fields
 - daily/weekly reports are sent to user's Feishu via `FEISHU_REPORT_USER_ID`
 - Alembic migrations are up to date (8 migrations in repository)
-- 229 tests passing in isolated storage, CI pipeline configured (2026-10-11)
+- 245 tests passing in isolated storage; 11 collector tests passing (2026-10-12)
 - `/automation/status` confirms required scheduler jobs are registered and exposes maintenance results
 - scheduled Feishu reconciliation is detect-only; repair requires a stable snapshot and an independent second read
 - Web management UI available at `http://localhost:8000/` (editorial campus bulletin design)

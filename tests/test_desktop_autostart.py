@@ -81,3 +81,19 @@ def test_disabling_missing_autostart_entry_is_idempotent(monkeypatch):
     monkeypatch.setattr(autostart, "winreg", fake)
 
     autostart.AutostartManager().set_enabled(False)
+
+
+def test_packaged_autostart_routes_login_through_recovery_task(monkeypatch, tmp_path):
+    fake = FakeWinreg()
+    monkeypatch.setattr(autostart, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(autostart, "winreg", fake)
+    monkeypatch.setattr(autostart.sys, "frozen", True, raising=False)
+    monkeypatch.setattr("desktop.paths.project_root", lambda: tmp_path)
+    calls = []
+    monkeypatch.setattr(autostart.subprocess, "run", lambda command, **kwargs: calls.append(command))
+    manager = autostart.AutostartManager(command="test.exe")
+    manager.set_enabled(True)
+    assert fake.values[autostart.AUTOSTART_REG_NAME] == autostart.recovery_task_command()
+    manager.set_enabled(False)
+    assert calls[0][calls[0].index("-Mode") + 1] == "Enable"
+    assert calls[1][calls[1].index("-Mode") + 1] == "Disable"
